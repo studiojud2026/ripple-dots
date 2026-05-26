@@ -6,7 +6,7 @@ export default function App() {
   return (
     <>
       <Composition />
-      <DialRoot position="top-right" />
+      <DialRoot position="top-right" productionEnabled />
     </>
   );
 }
