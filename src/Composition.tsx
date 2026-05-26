@@ -61,7 +61,18 @@ export function Composition() {
         perspective: [900, 200, 4000, 10],
       },
       dot: {
+        shape: {
+          type: 'select' as const,
+          options: [
+            { value: 'round', label: 'Round' },
+            { value: 'square', label: 'Square' },
+            { value: 'line', label: 'Line' },
+          ],
+          default: 'round' as const,
+        },
         size: [2.3, 0.5, 20, 0.1],
+        lineLength: [6, 1, 40, 0.1],
+        lineAngle: [0, -180, 180],
         mode: {
           type: 'select' as const,
           options: [
@@ -213,30 +224,70 @@ export function Composition() {
     const sinP = Math.sin(pitch);
     const focal = p.composition.perspective;
 
+    // Project a point from shape-space to screen-space using yaw → pitch → perspective.
+    const project = (x: number, y: number, z: number) => {
+      const x1 = x * cosY + z * sinY;
+      const z1 = -x * sinY + z * cosY;
+      const y2 = y * cosP - z1 * sinP;
+      const z2 = y * sinP + z1 * cosP;
+      const scale = focal / (focal + z2);
+      return { px: x1 * scale, py: y2 * scale, depth: z2, scale };
+    };
+
+    const dotShape = p.dot.shape;
+    const lineHalfLen = (p.dot.lineLength * p.dot.size) / 2;
+    const lineAngleRad = (p.dot.lineAngle * Math.PI) / 180;
+
     // Project all dots, then z-sort (painter's algorithm) so closer dots draw last.
-    type P = { px: number; py: number; pr: number; depth: number; crest: number };
+    type P = {
+      px: number;
+      py: number;
+      pr: number;
+      depth: number;
+      crest: number;
+      // Line endpoints (only populated when shape === 'line')
+      ax?: number;
+      ay?: number;
+      bx?: number;
+      by?: number;
+    };
     const projected: P[] = [];
     let minDepth = Infinity;
     let maxDepth = -Infinity;
     let maxCrest = 0;
     for (const d of rippled) {
-      const x1 = d.x * cosY + d.z * sinY;
-      const z1 = -d.x * sinY + d.z * cosY;
-      const y2 = d.y * cosP - z1 * sinP;
-      const z2 = d.y * sinP + z1 * cosP;
-      const scale = focal / (focal + z2);
-      if (scale <= 0) continue;
+      const center = project(d.x, d.y, d.z);
+      if (center.scale <= 0) continue;
       const crest = Math.abs(d.z);
       if (crest > maxCrest) maxCrest = crest;
-      if (z2 < minDepth) minDepth = z2;
-      if (z2 > maxDepth) maxDepth = z2;
-      projected.push({
-        px: x1 * scale,
-        py: y2 * scale,
-        pr: Math.max(0.1, d.r * scale),
-        depth: z2,
+      if (center.depth < minDepth) minDepth = center.depth;
+      if (center.depth > maxDepth) maxDepth = center.depth;
+
+      const out: P = {
+        px: center.px,
+        py: center.py,
+        pr: Math.max(0.1, d.r * center.scale),
+        depth: center.depth,
         crest: d.z,
-      });
+      };
+
+      if (dotShape === 'line') {
+        // Orient each line along the radial direction (rotated by lineAngle).
+        // Lines lying in the shape's local plane → both endpoints share Z, so
+        // they foreshorten correctly under tilt by projecting both ends.
+        const r2 = Math.hypot(d.x, d.y);
+        const theta = r2 === 0 ? 0 : Math.atan2(d.y, d.x);
+        const dx = Math.cos(theta + lineAngleRad) * lineHalfLen;
+        const dy = Math.sin(theta + lineAngleRad) * lineHalfLen;
+        const a = project(d.x - dx, d.y - dy, d.z);
+        const b = project(d.x + dx, d.y + dy, d.z);
+        out.ax = a.px;
+        out.ay = a.py;
+        out.bx = b.px;
+        out.by = b.py;
+      }
+
+      projected.push(out);
     }
     projected.sort((a, b) => b.depth - a.depth);
 
@@ -265,12 +316,29 @@ export function Composition() {
           crestNorm >= 0
             ? lerpRgb(mid, crest, crestNorm)
             : lerpRgb(mid, trough, -crestNorm);
-        ctx.fillStyle = `rgb(${c.r},${c.g},${c.b})`;
+        const rgb = `rgb(${c.r},${c.g},${c.b})`;
+        ctx.fillStyle = rgb;
+        ctx.strokeStyle = rgb;
+      } else if (dotShape === 'line') {
+        ctx.strokeStyle = p.dot.color;
       }
       ctx.globalAlpha = alpha;
-      ctx.beginPath();
-      ctx.arc(d.px, d.py, d.pr, 0, Math.PI * 2);
-      ctx.fill();
+
+      if (dotShape === 'square') {
+        const s = d.pr * 2;
+        ctx.fillRect(d.px - d.pr, d.py - d.pr, s, s);
+      } else if (dotShape === 'line') {
+        ctx.lineCap = 'round';
+        ctx.lineWidth = Math.max(0.3, d.pr);
+        ctx.beginPath();
+        ctx.moveTo(d.ax!, d.ay!);
+        ctx.lineTo(d.bx!, d.by!);
+        ctx.stroke();
+      } else {
+        ctx.beginPath();
+        ctx.arc(d.px, d.py, d.pr, 0, Math.PI * 2);
+        ctx.fill();
+      }
     }
     ctx.restore();
   }, [
@@ -281,6 +349,9 @@ export function Composition() {
     p.dot.depthFade,
     p.dot.crestGlow,
     p.dot.mode,
+    p.dot.shape,
+    p.dot.lineLength,
+    p.dot.lineAngle,
     p.dot.troughColor,
     p.dot.midColor,
     p.dot.crestColor,
