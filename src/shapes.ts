@@ -47,6 +47,10 @@ export function sampleBoundary(
       return flowerPoints(radius, 6, samples);
     case 'custom':
       return customPoints(customPath, radius, samples);
+    case 'image':
+      // Image silhouettes are pixel-based; edge-driven ripples use the bounding
+      // circle as the fallback boundary so they still produce a wave.
+      return ring(radius, samples);
   }
 }
 
@@ -193,6 +197,10 @@ export function buildShape(kind: ShapeKind, radius: number, customPath?: string)
       return flower(radius, 6);
     case 'custom':
       return customSvg(customPath ?? '', radius);
+    case 'image':
+      // Path2D fallback when image isn't loaded yet — the image-mask filter
+      // in Composition takes over once data is available.
+      return circle(radius);
   }
 }
 
