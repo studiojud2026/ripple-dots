@@ -1,73 +1,58 @@
-# React + TypeScript + Vite
+# Ripple Dots
 
-This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
+A generator for circular geometric dot compositions with real 3D ripple distortion. Built with React, Vite, and [Dialkit](https://www.npmjs.com/package/dialkit) for live parameter tweaking.
 
-Currently, two official plugins are available:
+## Generators
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Oxc](https://oxc.rs)
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/)
+Six ways to lay out the dot field:
 
-## React Compiler
+- **Radial** — concentric rings, even angular spacing
+- **Concentric** — rings with per-ring phase offset
+- **Spiral** — multi-arm Archimedean spirals
+- **Phyllotaxis** — golden-angle sunflower packing
+- **Grid** — square grid clipped to the silhouette
+- **Dither** — stochastic packing with radial falloff
 
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
+## Shapes
 
-## Expanding the ESLint configuration
+The dot field can be masked to any silhouette via Path2D hit-testing. Built-in shapes: Circle, Heart, Star, Hexagon, Triangle, Flower. **Custom SVG** accepts either a raw `d` attribute or a full `<svg>` pasted from Figma/Illustrator — multiple paths in the markup are combined into one silhouette.
 
-If you are developing a production application, we recommend updating the configuration to enable type-aware lint rules:
+## Ripples
 
-```js
-export default defineConfig([
-  globalIgnores(['dist']),
-  {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      // Other configs...
+Six distortion modes. Frequency, depth, decay (distance-based attenuation), and animated phase are exposed per-ripple.
 
-      // Remove tseslint.configs.recommended and replace with this
-      tseslint.configs.recommendedTypeChecked,
-      // Alternatively, use this for stricter rules
-      tseslint.configs.strictTypeChecked,
-      // Optionally, add this for stylistic rules
-      tseslint.configs.stylisticTypeChecked,
+- **Radial** — sinusoidal wave height radiating from center
+- **Concentric Pulse** — breathing rings (XY scale)
+- **Horizontal** — wave along the X axis (height in Z)
+- **Twist** — angular sinusoid winding dots around center
+- **Edge Wave (shape)** — wave height = `sin(distanceFromNearestEdge × freq)`. Wave contours hug the silhouette outline
+- **Edge Pulse (shape)** — same edge-distance wave applied as XY breathing
 
-      // Other configs...
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-])
+## 3D rendering
+
+Dots have a Z coordinate (wave height for radial/horizontal/edge-wave modes). Each frame:
+
+1. Yaw rotation around Y axis (Composition → Rotation)
+2. Pitch rotation around X axis (Composition → Tilt)
+3. Perspective projection with adjustable focal length
+4. Z-sort for proper occlusion
+5. Per-dot alpha from depth fog (`Depth Fade`) and wave-height glow (`Crest Glow`)
+6. Optional heatmap coloring — `Trough Color` → `Mid Color` → `Crest Color` interpolated from wave height
+
+## Run it
+
+```bash
+npm install
+npm run dev
 ```
 
-You can also install [eslint-plugin-react-x](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-x) and [eslint-plugin-react-dom](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-dom) for React-specific lint rules:
+## Keyboard shortcuts
 
-```js
-// eslint.config.js
-import reactX from 'eslint-plugin-react-x'
-import reactDom from 'eslint-plugin-react-dom'
+- `F + scroll` — ripple frequency (fine mode)
+- `D + scroll` — ripple depth
+- `S + scroll` — composition spacing
+- `Z + scroll` — dot size (fine mode)
+- `R + scroll` — rotation
+- `T + scroll` — tilt
 
-export default defineConfig([
-  globalIgnores(['dist']),
-  {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      // Other configs...
-      // Enable lint rules for React
-      reactX.configs['recommended-typescript'],
-      // Enable lint rules for React DOM
-      reactDom.configs.recommended,
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-])
-```
+Hold the key and scroll over the canvas — no need to grab the panel slider.
