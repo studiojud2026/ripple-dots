@@ -5,7 +5,8 @@ export type ShapeKind =
   | 'hexagon'
   | 'triangle'
   | 'flower'
-  | 'custom';
+  | 'custom'
+  | 'image';
 
 export const SHAPE_OPTIONS: { value: ShapeKind; label: string }[] = [
   { value: 'circle', label: 'Circle' },
@@ -15,6 +16,7 @@ export const SHAPE_OPTIONS: { value: ShapeKind; label: string }[] = [
   { value: 'triangle', label: 'Triangle' },
   { value: 'flower', label: 'Flower' },
   { value: 'custom', label: 'Custom SVG' },
+  { value: 'image', label: 'Image' },
 ];
 
 export type Point = { x: number; y: number };

@@ -4,7 +4,27 @@ import { generate, type GeneratorKind } from './generators';
 import { applyRipple, type RippleKind } from './ripples';
 import { buildShape, sampleBoundary, SHAPE_OPTIONS, type ShapeKind } from './shapes';
 
+type ImageBuffer = { data: Uint8ClampedArray; w: number; h: number };
+
 type RGB = { r: number; g: number; b: number };
+
+/**
+ * Map a shape-space coordinate (origin at center, ±radius bounds) into
+ * pixel coordinates within an image whose long edge is fit to 2 × radius.
+ * Returns `null` if the point falls outside the image rectangle.
+ */
+function imagePixel(x: number, y: number, img: ImageBuffer, radius: number): number | null {
+  const fit = (2 * radius) / Math.max(img.w, img.h);
+  const dispW = img.w * fit;
+  const dispH = img.h * fit;
+  const u = (x + dispW / 2) / dispW;
+  const v = (y + dispH / 2) / dispH;
+  if (u < 0 || u > 1 || v < 0 || v > 1) return null;
+  const px = Math.min(img.w - 1, Math.max(0, Math.floor(u * img.w)));
+  const py = Math.min(img.h - 1, Math.max(0, Math.floor(v * img.h)));
+  return (py * img.w + px) * 4;
+}
+
 function hexToRgb(hex: string): RGB {
   const h = hex.replace('#', '');
   const v = h.length === 3 ? h.split('').map((c) => c + c).join('') : h;
@@ -24,8 +44,61 @@ function lerpRgb(a: RGB, b: RGB, t: number): RGB {
 
 export function Composition() {
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
   const [seed, setSeed] = useState(1);
   const [phase, setPhase] = useState(0);
+  // Image source (data URL from file picker, or pasted URL). When loaded it
+  // becomes the silhouette mask (Shape = Image) and/or the dot color source
+  // (Mode = Image).
+  const [imageSrc, setImageSrc] = useState<string | null>(null);
+  const [imageBuf, setImageBuf] = useState<ImageBuffer | null>(null);
+  const [imageName, setImageName] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!imageSrc) {
+      setImageBuf(null);
+      return;
+    }
+    let cancelled = false;
+    const img = new Image();
+    img.crossOrigin = 'anonymous';
+    img.onload = () => {
+      if (cancelled) return;
+      // Cap the working image at 512px on its long edge — plenty of fidelity
+      // for masking/color sampling without thrashing getImageData per frame.
+      const maxEdge = 512;
+      const scale = Math.min(1, maxEdge / Math.max(img.width, img.height));
+      const w = Math.max(1, Math.round(img.width * scale));
+      const h = Math.max(1, Math.round(img.height * scale));
+      const c = document.createElement('canvas');
+      c.width = w;
+      c.height = h;
+      const cx = c.getContext('2d');
+      if (!cx) return;
+      cx.drawImage(img, 0, 0, w, h);
+      try {
+        const id = cx.getImageData(0, 0, w, h);
+        setImageBuf({ data: id.data, w, h });
+      } catch {
+        // Cross-origin tainted canvas — give up silently
+        setImageBuf(null);
+      }
+    };
+    img.onerror = () => !cancelled && setImageBuf(null);
+    img.src = imageSrc;
+    return () => {
+      cancelled = true;
+    };
+  }, [imageSrc]);
+
+  const handleFile = (file: File) => {
+    setImageName(file.name);
+    const reader = new FileReader();
+    reader.onload = () => {
+      if (typeof reader.result === 'string') setImageSrc(reader.result);
+    };
+    reader.readAsDataURL(file);
+  };
 
   const p = useDialKit(
     'Ripple Dots',
@@ -78,6 +151,7 @@ export function Composition() {
           options: [
             { value: 'solid', label: 'Solid' },
             { value: 'heatmap', label: 'Heatmap' },
+            { value: 'image', label: 'Image' },
           ],
           default: 'heatmap',
         },
@@ -164,16 +238,23 @@ export function Composition() {
     ],
   );
 
-  // Mask dots to the chosen silhouette using Path2D + isPointInPath. The hit-
-  // test context is a tiny offscreen canvas — no rendering happens here.
+  // Mask dots to the chosen silhouette. For built-in/SVG shapes we hit-test
+  // against a Path2D; for image shapes we sample the alpha channel.
   const masked = useMemo(() => {
+    if (shapeKind === 'image') {
+      if (!imageBuf) return dots; // no image loaded yet — pass through
+      return dots.filter((d) => {
+        const idx = imagePixel(d.x, d.y, imageBuf, p.composition.radius);
+        return idx !== null && imageBuf.data[idx + 3] > 128;
+      });
+    }
     if (shapeKind === 'circle' && p.composition.radius > 0) return dots;
     const path = buildShape(shapeKind, p.composition.radius, p.composition.customPath);
     const c = document.createElement('canvas');
     const ctx = c.getContext('2d');
     if (!ctx) return dots;
     return dots.filter((d) => ctx.isPointInPath(path, d.x, d.y));
-  }, [dots, shapeKind, p.composition.radius, p.composition.customPath]);
+  }, [dots, shapeKind, p.composition.radius, p.composition.customPath, imageBuf]);
 
   // Sample the silhouette outline once per shape change; reused every frame
   // by edge-driven ripples (no recomputation when only phase changes).
@@ -250,8 +331,13 @@ export function Composition() {
       ay?: number;
       bx?: number;
       by?: number;
+      // Sampled image color (only populated when Mode === 'image')
+      ir?: number;
+      ig?: number;
+      ib?: number;
     };
     const projected: P[] = [];
+    const sampleImage = p.dot.mode === 'image' && imageBuf;
     let minDepth = Infinity;
     let maxDepth = -Infinity;
     let maxCrest = 0;
@@ -270,6 +356,20 @@ export function Composition() {
         depth: center.depth,
         crest: d.z,
       };
+
+      if (sampleImage) {
+        // Sample image color at the dot's ORIGINAL (pre-ripple) shape-space
+        // position so the image pattern stays fixed in space while the dots
+        // wave underneath it. Use d.x / d.y from the rippled record because
+        // edge/twist ripples may have moved XY; for radial-z ripples this is
+        // the same as the source.
+        const idx = imagePixel(d.x, d.y, imageBuf!, p.composition.radius);
+        if (idx !== null) {
+          out.ir = imageBuf!.data[idx];
+          out.ig = imageBuf!.data[idx + 1];
+          out.ib = imageBuf!.data[idx + 2];
+        }
+      }
 
       if (dotShape === 'line') {
         // Orient each line along the radial direction (rotated by lineAngle).
@@ -310,7 +410,11 @@ export function Composition() {
       const alpha = Math.max(0, Math.min(1, baseAlpha * depthAlpha * crestAlpha));
       if (alpha <= 0) continue;
 
-      if (heatmap) {
+      if (p.dot.mode === 'image' && d.ir !== undefined) {
+        const rgb = `rgb(${d.ir},${d.ig},${d.ib})`;
+        ctx.fillStyle = rgb;
+        ctx.strokeStyle = rgb;
+      } else if (heatmap) {
         // crestNorm is in [-1, 1]: -1 → trough, 0 → mid, +1 → crest
         const c =
           crestNorm >= 0
@@ -352,6 +456,7 @@ export function Composition() {
     p.dot.shape,
     p.dot.lineLength,
     p.dot.lineAngle,
+    imageBuf,
     p.dot.troughColor,
     p.dot.midColor,
     p.dot.crestColor,
@@ -359,6 +464,8 @@ export function Composition() {
     p.composition.tilt,
     p.composition.perspective,
   ]);
+
+  const needsImage = shapeKind === 'image' || p.dot.mode === 'image';
 
   return (
     <div
@@ -372,6 +479,77 @@ export function Composition() {
       }}
     >
       <canvas ref={canvasRef} />
+      {needsImage && (
+        <div
+          style={{
+            position: 'fixed',
+            top: 16,
+            left: 16,
+            display: 'flex',
+            gap: 8,
+            alignItems: 'center',
+            padding: '8px 12px',
+            background: 'rgba(20, 20, 28, 0.75)',
+            border: '1px solid rgba(255,255,255,0.1)',
+            borderRadius: 8,
+            color: '#e5e5e5',
+            fontSize: 12,
+            backdropFilter: 'blur(8px)',
+          }}
+        >
+          <button
+            type="button"
+            onClick={() => fileInputRef.current?.click()}
+            style={{
+              padding: '6px 12px',
+              background: '#2a2a36',
+              border: '1px solid rgba(255,255,255,0.15)',
+              borderRadius: 6,
+              color: '#f5f5f5',
+              cursor: 'pointer',
+              fontSize: 12,
+            }}
+          >
+            {imageBuf ? 'Replace Image' : 'Load Image'}
+          </button>
+          <span style={{ opacity: 0.7, maxWidth: 200, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+            {imageBuf
+              ? `${imageName ?? 'image'} (${imageBuf.w}×${imageBuf.h})`
+              : 'No image loaded'}
+          </span>
+          {imageBuf && (
+            <button
+              type="button"
+              onClick={() => {
+                setImageSrc(null);
+                setImageName(null);
+              }}
+              style={{
+                padding: '4px 8px',
+                background: 'transparent',
+                border: '1px solid rgba(255,255,255,0.15)',
+                borderRadius: 6,
+                color: '#999',
+                cursor: 'pointer',
+                fontSize: 11,
+              }}
+            >
+              Clear
+            </button>
+          )}
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept="image/*"
+            style={{ display: 'none' }}
+            onChange={(e) => {
+              const file = e.target.files?.[0];
+              if (file) handleFile(file);
+              e.target.value = ''; // allow re-selecting the same file
+            }}
+          />
+        </div>
+      )}
     </div>
   );
 }
