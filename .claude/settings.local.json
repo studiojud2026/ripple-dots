@@ -1,0 +1,23 @@
+{
+  "permissions": {
+    "allow": [
+      "WebFetch(domain:www.npmjs.com)",
+      "Bash(npm view *)",
+      "Bash(tar -xzf dialkit-*.tgz)",
+      "Bash(cat /tmp/dialkit-inspect/package/README.md)",
+      "Bash(npm create *)",
+      "Bash(mv ripple-dots/* ripple-dots/.* .)",
+      "Bash(rmdir ripple-dots *)",
+      "Bash(npm install *)",
+      "Bash(rm -f src/App.css src/assets/react.svg src/assets/hero.png public/vite.svg public/icons.svg)",
+      "Bash(npx tsc *)",
+      "Bash(npm run *)",
+      "Bash(curl -s http://localhost:5173/ -o /dev/null -w \"%{http_code}\\\\n\")",
+      "mcp__Claude_Preview__preview_start",
+      "Bash(git init *)",
+      "Bash(gh auth *)",
+      "Bash(git add *)",
+      "Bash(git -c commit.gpgsign=false commit -q -m ' *)"
+    ]
+  }
+}
