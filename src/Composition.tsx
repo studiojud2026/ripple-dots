@@ -365,7 +365,7 @@ export function Composition() {
 
     const ink = pane.addFolder({ title: 'Ink' });
     inkBlades.push(ink);
-    ink.addBinding(params, 'inkCount', { label: 'Count', min: 1, max: 400, step: 1 });
+    ink.addBinding(params, 'inkCount', { label: 'Count', min: 1, max: 800, step: 1 });
     ink.addBinding(params, 'inkColor', { label: 'Ink Color' });
     ink.addBinding(params, 'inkSizeMin', { label: 'Size Min', min: 0, max: 600, step: 1 });
     ink.addBinding(params, 'inkSizeMax', { label: 'Size Max', min: 10, max: 800, step: 1 });
@@ -742,15 +742,26 @@ export function Composition() {
       // same ink seed (so it stays stable across renders).
       const widthRand = mulberry32(p.inkSeed ^ 0xa5);
 
+      // The unit circle is identical for every loop, so compute its cos/sin
+      // table ONCE here instead of nVerts trig calls per loop. At high counts
+      // this removes the dominant redundant cost (e.g. 800 loops × 96 verts =
+      // ~153k trig calls collapse to 96).
+      const unitCos = new Float64Array(nVerts);
+      const unitSin = new Float64Array(nVerts);
+      for (let i = 0; i < nVerts; i++) {
+        const t = (i / nVerts) * Math.PI * 2;
+        unitCos[i] = Math.cos(t);
+        unitSin[i] = Math.sin(t);
+      }
+
       for (const L of loops) {
         // 1. Build the loop's vertex polygon (closed ellipse) in shape space.
         const verts = new Array(nVerts);
         const cr = Math.cos(L.rotation);
         const sr = Math.sin(L.rotation);
         for (let i = 0; i < nVerts; i++) {
-          const t = (i / nVerts) * Math.PI * 2;
-          const lx = Math.cos(t) * L.a;
-          const ly = Math.sin(t) * L.b;
+          const lx = unitCos[i] * L.a;
+          const ly = unitSin[i] * L.b;
           verts[i] = {
             x: L.cx + lx * cr - ly * sr,
             y: L.cy + lx * sr + ly * cr,
