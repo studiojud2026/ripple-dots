@@ -213,12 +213,13 @@ const DEFAULTS = {
   inkRibbonSpread: 0.7, // vertical scatter of ribbons (fraction of radius)
   inkRibbonAnimate: false,
   inkRibbonSpeed: 0.6,
-  // Secondary ripple on the ribbon surface — a higher-frequency travelling
-  // wave that corrugates the band along its length AND across its width,
-  // riding in Z so the tilt reveals it as relief. 0 amp = off.
-  inkRibbonRippleAmp: 16,
-  inkRibbonRippleFreq: 3.5, // cycles across the span
-  inkRibbonRippleCross: 2, // phase offset across the width (twisting corrugation)
+  // Droplet ripple — concentric waves emanating from the canvas centre that
+  // expand outward (and animate). Distance-from-centre based, so it ripples
+  // symmetrically to every side. Rides mostly in Z so tilt shows the relief.
+  // 0 amp = off.
+  inkRibbonRippleAmp: 22,
+  inkRibbonRippleFreq: 4, // ring count from centre to canvas edge
+  inkRibbonRippleFalloff: 1, // how fast the droplet energy fades outward (0 = none)
   // How strongly the Canvas → Shape silhouette DEFORMS the ink field.
   // 0 = ignore shape (pure circular field); 1 = fully squish the ink into the
   // silhouette outline. This warps geometry rather than masking, so strokes
@@ -662,21 +663,21 @@ export function Composition() {
     rib.addBinding(params, 'inkRibbonSpan', { label: 'Span', min: 0.5, max: 2, step: 0.01 });
     rib.addBinding(params, 'inkRibbonSpread', { label: 'Spread', min: 0, max: 1, step: 0.01 });
     rib.addBinding(params, 'inkRibbonRippleAmp', {
-      label: 'Ripple Amp',
+      label: 'Droplet Amp',
       min: 0,
       max: 80,
       step: 0.5,
     });
     rib.addBinding(params, 'inkRibbonRippleFreq', {
-      label: 'Ripple Freq',
+      label: 'Droplet Rings',
       min: 0,
-      max: 12,
+      max: 16,
       step: 0.1,
     });
-    rib.addBinding(params, 'inkRibbonRippleCross', {
-      label: 'Ripple Cross',
+    rib.addBinding(params, 'inkRibbonRippleFalloff', {
+      label: 'Droplet Falloff',
       min: 0,
-      max: 6,
+      max: 4,
       step: 0.05,
     });
     rib.addBinding(params, 'inkRibbonAnimate', { label: 'Animate (L→R)' });
@@ -1179,10 +1180,13 @@ export function Composition() {
         const amp = p.inkRibbonAmplitude;
         const waveK = span > 0 ? (p.inkRibbonWaveFreq * Math.PI * 2) / span : 0;
         const twistK = span > 0 ? (p.inkRibbonTwist * Math.PI * 2) / span : 0;
-        // Secondary surface ripple — higher-frequency travelling wave.
-        const ripK = span > 0 ? (p.inkRibbonRippleFreq * Math.PI * 2) / span : 0;
+        // Droplet ripple — concentric waves from the canvas centre. ripK is
+        // scaled so Droplet Rings = number of rings from centre to the canvas
+        // edge; energy fades outward by ripFalloff and expands with phase.
+        const ripK = p.radius > 0 ? (p.inkRibbonRippleFreq * Math.PI * 2) / p.radius : 0;
         const ripAmp = p.inkRibbonRippleAmp;
-        const ripCross = p.inkRibbonRippleCross;
+        const ripFalloff = p.inkRibbonRippleFalloff;
+        const ripMaxR = p.radius * 1.4;
         const vSpread = p.radius * p.inkRibbonSpread;
         const fade = p.inkDepthFade;
 
@@ -1218,11 +1222,15 @@ export function Composition() {
               const tw = x * twistK - phase * 0.6 + phaseOff;
               let yy = cy + v * halfW * Math.cos(tw);
               let zz = v * halfW * Math.sin(tw);
-              // Surface ripple: corrugates along length (ripK) and across the
-              // width (v·ripCross), travelling a touch faster than the flow.
+              // Droplet ripple: concentric waves keyed on distance from the
+              // canvas centre, expanding outward with phase and fading by
+              // ripFalloff — symmetric to every side, like a dropped pebble.
               if (ripAmp !== 0) {
-                const rip = ripAmp * Math.sin(x * ripK - phase * 1.3 + v * ripCross + phaseOff);
-                yy += rip * 0.4;
+                const dist = Math.sqrt(x * x + yy * yy);
+                const att =
+                  ripFalloff > 0 ? Math.pow(Math.max(0, 1 - dist / ripMaxR), ripFalloff) : 1;
+                const rip = ripAmp * Math.sin(dist * ripK - phase) * att;
+                yy += rip * 0.3;
                 zz += rip;
               }
               const pr = project(x, yy, zz);
@@ -1606,7 +1614,7 @@ export function Composition() {
     p.inkRibbonSpread,
     p.inkRibbonRippleAmp,
     p.inkRibbonRippleFreq,
-    p.inkRibbonRippleCross,
+    p.inkRibbonRippleFalloff,
     waterSources,
     p.inkWaterRings,
     p.inkWaterSpacing,
