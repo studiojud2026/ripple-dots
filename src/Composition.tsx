@@ -182,9 +182,24 @@ const DEFAULTS = {
   // atmospheric fog — loops farther from the camera lose alpha and recede.
   inkDepthSpread: 0,
   inkDepthFade: 0.4,
-  // Ink sub-style. 'loops' = the centered mathematical loops (default);
-  // 'ribbons' = wide twirling horizontal bands that flow left↔right.
-  inkStyle: 'loops' as 'loops' | 'ribbons',
+  // Ink sub-style. 'loops' = centered mathematical loops (default);
+  // 'ribbons' = wide twirling horizontal bands; 'ripples' = concentric water
+  // rings from drop sources placed on the math path, with true wave
+  // superposition between sources.
+  inkStyle: 'loops' as 'loops' | 'ribbons' | 'ripples',
+  // Ripples (water) style. Drop sources are sampled from the Placement path;
+  // each emits expanding concentric rings that ride on the combined wave
+  // height field of all sources (superposition), so where two ripple sets
+  // cross they interfere and bend.
+  inkWaterSources: 3,
+  inkWaterRings: 16,
+  inkWaterSpacing: 26, // base radial gap between rings (px)
+  inkWaterDecay: 1.3, // outward alpha falloff exponent (rings weaken as they spread)
+  inkWaterAmp: 12, // superposition wave height → Z relief (visible under tilt)
+  inkWaterFreq: 1, // wave number relative to ring spacing
+  inkWaterBend: 9, // in-plane displacement from crossing waves (the interference bend)
+  inkWaterAnimate: false,
+  inkWaterSpeed: 0.5,
   // Ribbon style. Each ribbon is a horizontal band rendered as `strands`
   // parallel lines; the band twists about its length axis (into Z) so it
   // reads as a twirling streamer, and the wave phase animates the flow.
@@ -226,9 +241,9 @@ export function Composition() {
   // setter on every blade.
   const dotBladesRef = useRef<{ hidden: boolean }[]>([]);
   const inkBladesRef = useRef<{ hidden: boolean }[]>([]);
-  // Ink sub-style blades (loops vs ribbons) toggled by inkStyle.
-  const inkLoopBladesRef = useRef<{ hidden: boolean }[]>([]);
-  const inkRibbonBladesRef = useRef<{ hidden: boolean }[]>([]);
+  // Ink sub-style blades toggled by inkStyle. Each entry lists which styles it
+  // applies to; a blade is shown only when the current style is in its set.
+  const inkStyleBladesRef = useRef<{ blade: { hidden: boolean }; styles: string[] }[]>([]);
   // The render effect stores its drawing closure here so PNG export can replay
   // it onto an offscreen canvas at a higher resolution.
   const drawSceneRef = useRef<((ctx: CanvasRenderingContext2D, size: number) => void) | null>(
@@ -454,39 +469,39 @@ export function Composition() {
 
     // ──────────── INK MODE ────────────
     const inkBlades: { hidden: boolean }[] = [];
-
-    const inkLoopBlades: { hidden: boolean }[] = [];
-    const inkRibbonBlades: { hidden: boolean }[] = [];
+    // Style-tagged blades — shown only when the current inkStyle is listed.
+    const styleBlades: { blade: { hidden: boolean }; styles: string[] }[] = [];
+    const tag = (blade: { hidden: boolean }, styles: string[]) => {
+      styleBlades.push({ blade, styles });
+      return blade;
+    };
+    const LOOPS = ['loops'];
+    const RIBBONS = ['ribbons'];
+    const RIPPLES = ['ripples'];
+    const LOOPS_RIPPLES = ['loops', 'ripples']; // Placement positions both
 
     const ink = pane.addFolder({ title: 'Ink' });
     inkBlades.push(ink);
     ink.addBinding(params, 'inkStyle', {
       label: 'Style',
-      options: { Loops: 'loops', Ribbons: 'ribbons' },
+      options: { Loops: 'loops', Ribbons: 'ribbons', Ripples: 'ripples' },
     });
-    ink.addBinding(params, 'inkCount', { label: 'Count', min: 1, max: 2500, step: 1 });
+    tag(ink.addBinding(params, 'inkCount', { label: 'Count', min: 1, max: 2500, step: 1 }), LOOPS);
     ink.addBinding(params, 'inkColor', { label: 'Ink Color' });
-    inkLoopBlades.push(
-      ink.addBinding(params, 'inkSizeMin', { label: 'Size Min', min: 0, max: 600, step: 1 }),
+    tag(ink.addBinding(params, 'inkSizeMin', { label: 'Size Min', min: 0, max: 600, step: 1 }), LOOPS);
+    tag(ink.addBinding(params, 'inkSizeMax', { label: 'Size Max', min: 10, max: 800, step: 1 }), LOOPS);
+    tag(
+      ink.addBinding(params, 'inkRadiusShrink', { label: 'Radius Shrink', min: 0, max: 1, step: 0.01 }),
+      LOOPS,
     );
-    inkLoopBlades.push(
-      ink.addBinding(params, 'inkSizeMax', { label: 'Size Max', min: 10, max: 800, step: 1 }),
-    );
-    inkLoopBlades.push(
-      ink.addBinding(params, 'inkRadiusShrink', {
-        label: 'Radius Shrink',
-        min: 0,
-        max: 1,
-        step: 0.01,
-      }),
-    );
-    inkLoopBlades.push(
+    tag(
       ink.addBinding(params, 'inkAspectVariance', {
         label: 'Aspect Variance',
         min: 0,
         max: 0.9,
         step: 0.01,
       }),
+      LOOPS,
     );
     ink.addBinding(params, 'inkAlpha', { label: 'Stroke Alpha', min: 0.005, max: 0.5, step: 0.005 });
     ink.addBinding(params, 'inkLineWidth', { label: 'Line Width', min: 0.5, max: 30, step: 0.1 });
@@ -528,7 +543,7 @@ export function Composition() {
     // at inkCount points. Param A/B/C/D mean different things per mode (see
     // INK_PATH_PARAM_LABELS in placement.ts and the README).
     const place = ink.addFolder({ title: 'Placement', expanded: true });
-    inkLoopBlades.push(place);
+    tag(place, LOOPS_RIPPLES);
     place.addBinding(params, 'inkPath', {
       label: 'Path',
       options: Object.fromEntries(INK_PATH_OPTIONS.map((o) => [o.label, o.value])),
@@ -586,7 +601,7 @@ export function Composition() {
     // visually reads as a single self-contained section, NOT shared with the
     // dot Ripple/Extra Ripples folders above.
     const inkRip = ink.addFolder({ title: 'Ripple', expanded: false });
-    inkLoopBlades.push(inkRip);
+    tag(inkRip, LOOPS);
     inkRip.addBinding(params, 'inkRippleKind', {
       label: 'Kind',
       options: {
@@ -616,9 +631,22 @@ export function Composition() {
     inkRip.addBinding(params, 'inkRippleAnimate', { label: 'Animate' });
     inkRip.addBinding(params, 'inkRippleSpeed', { label: 'Speed', min: 0, max: 5, step: 0.01 });
 
+    // ──── Water Rings sub-folder (ink style = ripples) ────
+    const water = ink.addFolder({ title: 'Water Rings', expanded: true });
+    tag(water, RIPPLES);
+    water.addBinding(params, 'inkWaterSources', { label: 'Sources', min: 1, max: 12, step: 1 });
+    water.addBinding(params, 'inkWaterRings', { label: 'Rings', min: 1, max: 60, step: 1 });
+    water.addBinding(params, 'inkWaterSpacing', { label: 'Ring Spacing', min: 4, max: 80, step: 1 });
+    water.addBinding(params, 'inkWaterDecay', { label: 'Outward Fade', min: 0, max: 4, step: 0.05 });
+    water.addBinding(params, 'inkWaterAmp', { label: 'Wave Height', min: 0, max: 80, step: 0.5 });
+    water.addBinding(params, 'inkWaterFreq', { label: 'Wave Freq', min: 0.1, max: 4, step: 0.05 });
+    water.addBinding(params, 'inkWaterBend', { label: 'Interference', min: 0, max: 40, step: 0.5 });
+    water.addBinding(params, 'inkWaterAnimate', { label: 'Animate (expand)' });
+    water.addBinding(params, 'inkWaterSpeed', { label: 'Speed', min: 0, max: 5, step: 0.01 });
+
     // ──── Ribbon sub-folder (ink style = ribbons) ────
     const rib = ink.addFolder({ title: 'Ribbons', expanded: true });
-    inkRibbonBlades.push(rib);
+    tag(rib, RIBBONS);
     rib.addBinding(params, 'inkRibbonCount', { label: 'Count', min: 1, max: 80, step: 1 });
     rib.addBinding(params, 'inkRibbonWidth', { label: 'Width', min: 4, max: 400, step: 1 });
     rib.addBinding(params, 'inkRibbonStrands', { label: 'Strands', min: 1, max: 60, step: 1 });
@@ -640,16 +668,13 @@ export function Composition() {
 
     dotBladesRef.current = dotBlades;
     inkBladesRef.current = inkBlades;
-    inkLoopBladesRef.current = inkLoopBlades;
-    inkRibbonBladesRef.current = inkRibbonBlades;
+    inkStyleBladesRef.current = styleBlades;
     // Initial visibility — set BEFORE wiring change listener so the first
     // render sees the right state.
     const inDots = params.renderMode === 'dots';
     dotBlades.forEach((b) => (b.hidden = !inDots));
     inkBlades.forEach((b) => (b.hidden = inDots));
-    const ribbons = params.inkStyle === 'ribbons';
-    inkLoopBlades.forEach((b) => (b.hidden = ribbons));
-    inkRibbonBlades.forEach((b) => (b.hidden = !ribbons));
+    styleBlades.forEach(({ blade, styles }) => (blade.hidden = !styles.includes(params.inkStyle)));
 
     pane.on('change', () => force());
     return () => {
@@ -665,10 +690,10 @@ export function Composition() {
     const inDots = p.renderMode === 'dots';
     dotBladesRef.current.forEach((b) => (b.hidden = !inDots));
     inkBladesRef.current.forEach((b) => (b.hidden = inDots));
-    // Within ink mode, swap loop-only vs ribbon-only controls.
-    const ribbons = p.inkStyle === 'ribbons';
-    inkLoopBladesRef.current.forEach((b) => (b.hidden = ribbons));
-    inkRibbonBladesRef.current.forEach((b) => (b.hidden = !ribbons));
+    // Within ink mode, show only the blades tagged for the active sub-style.
+    inkStyleBladesRef.current.forEach(
+      ({ blade, styles }) => (blade.hidden = !styles.includes(p.inkStyle)),
+    );
   }, [p.renderMode, p.inkStyle]);
 
   // Phase animation — drives whichever mode's animate toggle is on.
@@ -678,6 +703,9 @@ export function Composition() {
     if (p.inkStyle === 'ribbons') {
       animate = p.inkRibbonAnimate;
       speed = p.inkRibbonSpeed;
+    } else if (p.inkStyle === 'ripples') {
+      animate = p.inkWaterAnimate;
+      speed = p.inkWaterSpeed;
     } else {
       animate = p.inkRippleAnimate;
       speed = p.inkRippleSpeed;
@@ -811,7 +839,7 @@ export function Composition() {
     dl: number;
   };
   const loops = useMemo<Loop[]>(() => {
-    if (p.renderMode !== 'ink' || p.inkStyle === 'ribbons') return [];
+    if (p.renderMode !== 'ink' || p.inkStyle !== 'loops') return [];
     // Centers walk a deterministic mathematical path (Lissajous, spiral, rose,
     // trochoid, attractor, …). Path radius is the canvas radius so the outer
     // sweep fills the silhouette.
@@ -874,6 +902,50 @@ export function Composition() {
     p.inkPathPhase,
     p.inkPathScale,
     p.inkCenterShrink,
+    p.radius,
+  ]);
+
+  // Water ripple drop sources — sampled from the same Placement path as loops,
+  // with per-source color/phase jitter. Positions are static (don't depend on
+  // animation phase); the rings expand at render time.
+  type WaterSource = { x: number; y: number; dh: number; dl: number; phaseOff: number };
+  const waterSources = useMemo<WaterSource[]>(() => {
+    if (p.renderMode !== 'ink' || p.inkStyle !== 'ripples') return [];
+    const pts = generatePath(p.inkPath, {
+      count: p.inkWaterSources,
+      radius: p.radius * p.inkPathScale,
+      pathA: p.inkPathA,
+      pathB: p.inkPathB,
+      pathC: p.inkPathC,
+      pathD: p.inkPathD,
+      turns: p.inkTurns,
+      phase: p.inkPathPhase,
+      centerShrink: p.inkCenterShrink,
+    });
+    const rand = mulberry32(p.inkSeed);
+    return pts.map((c) => ({
+      x: c.x,
+      y: c.y,
+      dh: (rand() - 0.5) * 2 * p.inkHueShift,
+      dl: (rand() - 0.5) * 2 * p.inkLightnessShift,
+      phaseOff: rand() * Math.PI * 2,
+    }));
+  }, [
+    p.renderMode,
+    p.inkStyle,
+    p.inkWaterSources,
+    p.inkPath,
+    p.inkPathA,
+    p.inkPathB,
+    p.inkPathC,
+    p.inkPathD,
+    p.inkTurns,
+    p.inkPathPhase,
+    p.inkPathScale,
+    p.inkCenterShrink,
+    p.inkHueShift,
+    p.inkLightnessShift,
+    p.inkSeed,
     p.radius,
   ]);
 
@@ -960,6 +1032,113 @@ export function Composition() {
       ctx.lineCap = 'round';
       ctx.lineJoin = 'round';
       if (p.inkBlur > 0) ctx.filter = `blur(${p.inkBlur}px)`;
+
+      // ──────────── RIPPLES (WATER) STYLE ────────────
+      // Concentric rings from each drop source, expanding outward. Every ring
+      // vertex rides on the combined wave HEIGHT FIELD of all sources (true
+      // superposition → Z relief under tilt) and is bent in-plane where other
+      // sources' waves cross it (the interference look).
+      if (p.inkStyle === 'ripples') {
+        const project = (x: number, y: number, z: number) => {
+          const sx = x * cosS - y * sinS;
+          const sy = x * sinS + y * cosS;
+          const py3 = sy * cosP - z * sinP;
+          const pz3 = sy * sinP + z * cosP;
+          const scale = focal / Math.max(1, focal + pz3);
+          return { x: sx * scale, y: py3 * scale, depth: pz3 };
+        };
+
+        const nSamp = Math.max(8, p.inkVertices);
+        const uc = new Float64Array(nSamp);
+        const us = new Float64Array(nSamp);
+        for (let i = 0; i < nSamp; i++) {
+          const t = (i / nSamp) * Math.PI * 2;
+          uc[i] = Math.cos(t);
+          us[i] = Math.sin(t);
+        }
+
+        const spacing = p.inkWaterSpacing;
+        const rings = p.inkWaterRings;
+        const maxR = rings * spacing;
+        const decay = p.inkWaterDecay;
+        const amp = p.inkWaterAmp;
+        const kWave = ((Math.PI * 2) / spacing) * p.inkWaterFreq;
+        const bend = p.inkWaterBend;
+        const fade = p.inkDepthFade;
+        // phase already includes speed (set in the animation effect). frac
+        // expands the ring radii; the same phase travels the wave field.
+        const frac = p.inkWaterAnimate ? ((phase % 1) + 1) % 1 : 0;
+        const omega = phase;
+
+        type Ring = { pts: { x: number; y: number }[]; depth: number; alpha: number; dh: number; dl: number };
+        const built: Ring[] = [];
+        let minD = Infinity;
+        let maxD = -Infinity;
+
+        for (const src of waterSources) {
+          for (let k = 0; k < rings; k++) {
+            const ringR = (k + frac) * spacing;
+            if (ringR < 0.5 || ringR > maxR) continue;
+            const tNorm = ringR / maxR;
+            const aFadeIn = Math.min(1, ringR / spacing); // ease the newborn ring in
+            const aDecay = Math.pow(Math.max(0, 1 - tNorm), decay);
+            const ringAlpha = aFadeIn * aDecay;
+            if (ringAlpha <= 0.01) continue;
+
+            const pts = new Array(nSamp);
+            for (let i = 0; i < nSamp; i++) {
+              let px = src.x + uc[i] * ringR;
+              let py = src.y + us[i] * ringR;
+              let z = 0;
+              // Superposition over every source.
+              for (const s2 of waterSources) {
+                const dx = px - s2.x;
+                const dy = py - s2.y;
+                const dist = Math.sqrt(dx * dx + dy * dy);
+                const att = Math.max(0, 1 - dist / (maxR * 1.5));
+                if (att <= 0) continue;
+                const wave = Math.sin(kWave * dist - omega + s2.phaseOff);
+                z += amp * wave * att;
+                if (bend > 0 && s2 !== src && dist > 0.001) {
+                  const b = (bend * wave * att) / dist;
+                  px += dx * b;
+                  py += dy * b;
+                }
+              }
+              pts[i] = project(px, py, z);
+            }
+            const cd = project(src.x, src.y, 0).depth;
+            if (cd < minD) minD = cd;
+            if (cd > maxD) maxD = cd;
+            built.push({ pts, depth: cd, alpha: ringAlpha, dh: src.dh, dl: src.dl });
+          }
+        }
+
+        const dRange = maxD - minD || 1;
+        ctx.lineWidth = p.inkLineWidth;
+        for (const b of built) {
+          const fog = fade > 0 ? 1 - fade * ((b.depth - minD) / dRange) : 1;
+          ctx.strokeStyle = hslString(
+            baseHsl.h + b.dh,
+            baseHsl.s,
+            baseHsl.l + b.dl,
+            p.inkAlpha * b.alpha * fog,
+          );
+          ctx.beginPath();
+          for (let i = 0; i < b.pts.length; i++) {
+            const pt = b.pts[i];
+            if (i === 0) ctx.moveTo(pt.x, pt.y);
+            else ctx.lineTo(pt.x, pt.y);
+          }
+          ctx.closePath();
+          ctx.stroke();
+        }
+
+        ctx.filter = 'none';
+        ctx.globalCompositeOperation = 'source-over';
+        ctx.restore();
+        return;
+      }
 
       // ──────────── RIBBON STYLE ────────────
       // Horizontal bands that span the canvas and twist about their length
@@ -1390,6 +1569,14 @@ export function Composition() {
     p.inkRibbonTwist,
     p.inkRibbonSpan,
     p.inkRibbonSpread,
+    waterSources,
+    p.inkWaterRings,
+    p.inkWaterSpacing,
+    p.inkWaterDecay,
+    p.inkWaterAmp,
+    p.inkWaterFreq,
+    p.inkWaterBend,
+    p.inkWaterAnimate,
     p.inkSeed,
     p.customPath,
     boundary,
