@@ -10,10 +10,9 @@
     "preview": "vite preview"
   },
   "dependencies": {
-    "dialkit": "^1.2.0",
-    "motion": "^12.40.0",
     "react": "^19.2.6",
-    "react-dom": "^19.2.6"
+    "react-dom": "^19.2.6",
+    "tweakpane": "^4.0.5"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",

@@ -19,7 +19,8 @@
       "Bash(git add *)",
       "Bash(git -c commit.gpgsign=false commit -q -m ' *)",
       "Bash(gh repo *)",
-      "Bash(git push *)"
+      "Bash(git push *)",
+      "Bash(npm uninstall *)"
     ]
   }
 }

@@ -1,17 +1,16 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
-import { useDialKit } from 'dialkit';
+import { useEffect, useMemo, useReducer, useRef, useState } from 'react';
+import { Pane } from 'tweakpane';
 import { generate, type GeneratorKind } from './generators';
-import { applyRipple, type RippleKind } from './ripples';
-import { buildShape, sampleBoundary, SHAPE_OPTIONS, type ShapeKind } from './shapes';
+import { applyRipple, type ExtraSource, type RippleKind } from './ripples';
+import { buildShape, sampleBoundary, type ShapeKind } from './shapes';
 
 type ImageBuffer = { data: Uint8ClampedArray; w: number; h: number };
-
 type RGB = { r: number; g: number; b: number };
 
 /**
- * Map a shape-space coordinate (origin at center, ±radius bounds) into
- * pixel coordinates within an image whose long edge is fit to 2 × radius.
- * Returns `null` if the point falls outside the image rectangle.
+ * Map a shape-space coordinate (origin at center, ±radius bounds) into pixel
+ * coordinates within an image whose long edge is fit to 2 × radius. Returns
+ * `null` if the point falls outside the image rectangle.
  */
 function imagePixel(x: number, y: number, img: ImageBuffer, radius: number): number | null {
   const fit = (2 * radius) / Math.max(img.w, img.h);
@@ -42,14 +41,67 @@ function lerpRgb(a: RGB, b: RGB, t: number): RGB {
   };
 }
 
+function mulberry32(seed: number) {
+  let a = seed >>> 0;
+  return () => {
+    a |= 0;
+    a = (a + 0x6d2b79f5) | 0;
+    let t = a;
+    t = Math.imul(t ^ (t >>> 15), t | 1);
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+const DEFAULTS = {
+  generator: 'phyllotaxis' as GeneratorKind,
+  // composition
+  shape: 'heart' as ShapeKind,
+  customPath: 'M 0 -80 L 70 60 L -70 60 Z',
+  radius: 350,
+  spacing: 16,
+  density: 3,
+  rotation: 0,
+  tilt: 0,
+  perspective: 900,
+  // dot
+  dotShape: 'round' as 'round' | 'square' | 'line',
+  dotSize: 2.3,
+  lineLength: 6,
+  lineAngle: 0,
+  mode: 'heatmap' as 'solid' | 'heatmap' | 'image',
+  color: '#f5f5f5',
+  troughColor: '#3d6aff',
+  crestColor: '#ff42dc',
+  midColor: '#ffd53d',
+  background: '#0b0b10',
+  opacity: 1,
+  depthFade: 0.15,
+  crestGlow: 1,
+  // primary ripple
+  rippleKind: 'edge-wave' as RippleKind,
+  rippleFrequency: 1.4,
+  rippleDepth: 18,
+  rippleDecay: 0,
+  rippleAnimate: false,
+  rippleSpeed: 1,
+  // Extra ripple sources — scattered point sources whose radial waves
+  // interfere with the primary ripple to produce asymmetric patterns.
+  extraCount: 0,
+  extraDepth: 0.8, // relative to primary depth
+  extraFreqJitter: 0.6, // ± multiplier on primary frequency
+  extraSpread: 0.7, // fraction of radius the sources can wander to
+  extraSeed: 1,
+};
+
 export function Composition() {
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  const paneContainerRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const paramsRef = useRef({ ...DEFAULTS });
+  const [, force] = useReducer((n: number) => n + 1, 0);
   const [seed, setSeed] = useState(1);
   const [phase, setPhase] = useState(0);
-  // Image source (data URL from file picker, or pasted URL). When loaded it
-  // becomes the silhouette mask (Shape = Image) and/or the dot color source
-  // (Mode = Image).
   const [imageSrc, setImageSrc] = useState<string | null>(null);
   const [imageBuf, setImageBuf] = useState<ImageBuffer | null>(null);
   const [imageName, setImageName] = useState<string | null>(null);
@@ -64,8 +116,6 @@ export function Composition() {
     img.crossOrigin = 'anonymous';
     img.onload = () => {
       if (cancelled) return;
-      // Cap the working image at 512px on its long edge — plenty of fidelity
-      // for masking/color sampling without thrashing getImageData per frame.
       const maxEdge = 512;
       const scale = Math.min(1, maxEdge / Math.max(img.width, img.height));
       const w = Math.max(1, Math.round(img.width * scale));
@@ -80,7 +130,6 @@ export function Composition() {
         const id = cx.getImageData(0, 0, w, h);
         setImageBuf({ data: id.data, w, h });
       } catch {
-        // Cross-origin tainted canvas — give up silently
         setImageBuf(null);
       }
     };
@@ -100,182 +149,231 @@ export function Composition() {
     reader.readAsDataURL(file);
   };
 
-  const p = useDialKit(
-    'Ripple Dots',
-    {
-      generator: {
-        type: 'select',
-        options: [
-          { value: 'radial', label: 'Radial' },
-          { value: 'concentric', label: 'Concentric' },
-          { value: 'spiral', label: 'Spiral' },
-          { value: 'phyllotaxis', label: 'Phyllotaxis' },
-          { value: 'grid', label: 'Grid' },
-          { value: 'dither', label: 'Dither' },
-        ],
-        default: 'phyllotaxis',
-      },
-      composition: {
-        shape: {
-          type: 'select' as const,
-          options: SHAPE_OPTIONS,
-          default: 'heart' as const,
-        },
-        customPath: {
-          type: 'text' as const,
-          default: 'M 0 -80 L 70 60 L -70 60 Z',
-          placeholder: 'SVG path d="..." (used when Shape = Custom)',
-        },
-        radius: [350, 40, 600],
-        spacing: [16, 2, 60],
-        density: [3, 1, 12],
-        rotation: [0, -180, 180],
-        tilt: [0, -89, 89],
-        perspective: [900, 200, 4000, 10],
-      },
-      dot: {
-        shape: {
-          type: 'select' as const,
-          options: [
-            { value: 'round', label: 'Round' },
-            { value: 'square', label: 'Square' },
-            { value: 'line', label: 'Line' },
-          ],
-          default: 'round' as const,
-        },
-        size: [2.3, 0.5, 20, 0.1],
-        lineLength: [6, 1, 40, 0.1],
-        lineAngle: [0, -180, 180],
-        mode: {
-          type: 'select' as const,
-          options: [
-            { value: 'solid', label: 'Solid' },
-            { value: 'heatmap', label: 'Heatmap' },
-            { value: 'image', label: 'Image' },
-          ],
-          default: 'heatmap',
-        },
-        color: '#f5f5f5',
-        troughColor: '#3d6aff',
-        crestColor: '#ff42dc',
-        midColor: '#ffd53d',
-        background: '#0b0b10',
-        opacity: [1, 0, 1],
-        depthFade: [0.15, 0, 1],
-        crestGlow: [1, 0, 1],
-      },
-      ripple: {
-        kind: {
-          type: 'select' as const,
-          options: [
-            { value: 'off', label: 'Off' },
-            { value: 'radial', label: 'Radial' },
-            { value: 'concentric-pulse', label: 'Concentric Pulse' },
-            { value: 'horizontal', label: 'Horizontal' },
-            { value: 'twist', label: 'Twist' },
-            { value: 'edge-wave', label: 'Edge Wave (shape)' },
-            { value: 'edge-pulse', label: 'Edge Pulse (shape)' },
-          ],
-          default: 'edge-wave',
-        },
-        frequency: [1.4, 0.1, 30, 0.1],
-        depth: [18, 0, 120],
-        decay: [0, 0, 100],
-        animate: false,
-        speed: [1, 0, 5, 0.01],
-      },
-      shuffle: { type: 'action' as const },
-    },
-    {
-      onAction: (action) => {
-        if (action === 'shuffle') setSeed((s) => s + 1);
-      },
-      shortcuts: {
-        'ripple.frequency': { key: 'f', mode: 'fine' },
-        'ripple.depth': { key: 'd' },
-        'composition.spacing': { key: 's' },
-        'dot.size': { key: 'z', mode: 'fine' },
-        'composition.rotation': { key: 'r' },
-        'composition.tilt': { key: 't' },
-      },
-    },
-  );
-
+  // Mount Tweakpane once. All controls bind to paramsRef.current (mutable),
+  // and a single 'change' listener forces a React re-render so useMemo deps
+  // see the new values.
   useEffect(() => {
-    if (!p.ripple.animate) return;
+    if (!paneContainerRef.current) return;
+    // Tweakpane 4 re-exports its API types from `@tweakpane/core`, but that
+    // package isn't installed alongside `tweakpane` — so `Pane` only sees the
+    // members declared on its own class (constructor, dispose, etc.). Cast to
+    // any so the inherited FolderApi methods (addBinding, addFolder, on,
+    // refresh, addButton) typecheck. They exist at runtime regardless.
+    const pane = new Pane({
+      container: paneContainerRef.current,
+      title: 'Ripple Dots',
+    }) as any;
+    const params = paramsRef.current;
+
+    pane.addBinding(params, 'generator', {
+      options: {
+        Radial: 'radial',
+        Concentric: 'concentric',
+        Spiral: 'spiral',
+        Phyllotaxis: 'phyllotaxis',
+        Grid: 'grid',
+        Dither: 'dither',
+      },
+    });
+
+    const comp = pane.addFolder({ title: 'Composition' });
+    comp.addBinding(params, 'shape', {
+      options: {
+        Circle: 'circle',
+        Heart: 'heart',
+        Star: 'star',
+        Hexagon: 'hexagon',
+        Triangle: 'triangle',
+        Flower: 'flower',
+        'Custom SVG': 'custom',
+        Image: 'image',
+      },
+    });
+    comp.addBinding(params, 'customPath', { label: 'Custom Path' });
+    comp.addBinding(params, 'radius', { min: 40, max: 600, step: 1 });
+    comp.addBinding(params, 'spacing', { min: 2, max: 60, step: 1 });
+    comp.addBinding(params, 'density', { min: 1, max: 12, step: 1 });
+    comp.addBinding(params, 'rotation', { min: -180, max: 180, step: 1 });
+    comp.addBinding(params, 'tilt', { min: -89, max: 89, step: 1 });
+    comp.addBinding(params, 'perspective', { min: 200, max: 4000, step: 10 });
+
+    const dot = pane.addFolder({ title: 'Dot' });
+    dot.addBinding(params, 'dotShape', {
+      label: 'Shape',
+      options: { Round: 'round', Square: 'square', Line: 'line' },
+    });
+    dot.addBinding(params, 'dotSize', { label: 'Size', min: 0.5, max: 20, step: 0.1 });
+    dot.addBinding(params, 'lineLength', { label: 'Line Length', min: 1, max: 40, step: 0.1 });
+    dot.addBinding(params, 'lineAngle', { label: 'Line Angle', min: -180, max: 180, step: 1 });
+    dot.addBinding(params, 'mode', {
+      options: { Solid: 'solid', Heatmap: 'heatmap', Image: 'image' },
+    });
+    dot.addBinding(params, 'color');
+    dot.addBinding(params, 'troughColor', { label: 'Trough Color' });
+    dot.addBinding(params, 'crestColor', { label: 'Crest Color' });
+    dot.addBinding(params, 'midColor', { label: 'Mid Color' });
+    dot.addBinding(params, 'background');
+    dot.addBinding(params, 'opacity', { min: 0, max: 1, step: 0.01 });
+    dot.addBinding(params, 'depthFade', { label: 'Depth Fade', min: 0, max: 1, step: 0.01 });
+    dot.addBinding(params, 'crestGlow', { label: 'Crest Glow', min: 0, max: 1, step: 0.01 });
+
+    const rip = pane.addFolder({ title: 'Ripple' });
+    rip.addBinding(params, 'rippleKind', {
+      label: 'Kind',
+      options: {
+        Off: 'off',
+        Radial: 'radial',
+        'Concentric Pulse': 'concentric-pulse',
+        Horizontal: 'horizontal',
+        Twist: 'twist',
+        'Edge Wave (shape)': 'edge-wave',
+        'Edge Pulse (shape)': 'edge-pulse',
+      },
+    });
+    rip.addBinding(params, 'rippleFrequency', { label: 'Frequency', min: 0.1, max: 30, step: 0.1 });
+    rip.addBinding(params, 'rippleDepth', { label: 'Depth', min: 0, max: 120, step: 1 });
+    rip.addBinding(params, 'rippleDecay', { label: 'Decay', min: 0, max: 100, step: 1 });
+    rip.addBinding(params, 'rippleAnimate', { label: 'Animate' });
+    rip.addBinding(params, 'rippleSpeed', { label: 'Speed', min: 0, max: 5, step: 0.01 });
+
+    const extra = pane.addFolder({ title: 'Extra Ripples', expanded: false });
+    extra.addBinding(params, 'extraCount', { label: 'Count', min: 0, max: 12, step: 1 });
+    extra.addBinding(params, 'extraDepth', { label: 'Depth Mix', min: 0, max: 2, step: 0.01 });
+    extra.addBinding(params, 'extraFreqJitter', { label: 'Frequency Jitter', min: 0, max: 1, step: 0.01 });
+    extra.addBinding(params, 'extraSpread', { label: 'Spread', min: 0.1, max: 1, step: 0.01 });
+    extra.addBinding(params, 'extraSeed', { label: 'Seed', min: 0, max: 9999, step: 1 });
+    extra
+      .addButton({ title: 'Shuffle Sources' })
+      .on('click', () => {
+        params.extraSeed = Math.floor(Math.random() * 9999);
+        pane.refresh();
+        force();
+      });
+
+    pane
+      .addButton({ title: 'Shuffle Generator' })
+      .on('click', () => setSeed((s) => s + 1));
+
+    pane.on('change', () => force());
+    return () => {
+      pane.dispose();
+    };
+  }, []);
+
+  const p = paramsRef.current;
+
+  // Phase animation
+  useEffect(() => {
+    if (!p.rippleAnimate) return;
     let raf = 0;
     let last = performance.now();
     const tick = (t: number) => {
       const dt = (t - last) / 1000;
       last = t;
-      setPhase((ph) => ph + dt * p.ripple.speed * 2);
+      setPhase((ph) => ph + dt * p.rippleSpeed * 2);
       raf = requestAnimationFrame(tick);
     };
     raf = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(raf);
-  }, [p.ripple.animate, p.ripple.speed]);
+  }, [p.rippleAnimate, p.rippleSpeed]);
 
-  const shapeKind = p.composition.shape as ShapeKind;
+  const shapeKind = p.shape;
 
   const dots = useMemo(
     () =>
-      generate(p.generator as GeneratorKind, {
-        radius: p.composition.radius,
-        spacing: p.composition.spacing,
-        dotSize: p.dot.size,
-        density: p.composition.density,
+      generate(p.generator, {
+        radius: p.radius,
+        spacing: p.spacing,
+        dotSize: p.dotSize,
+        density: p.density,
         seed,
         bounds: shapeKind === 'circle' ? 'circle' : 'square',
       }),
-    [
-      p.generator,
-      p.composition.radius,
-      p.composition.spacing,
-      p.composition.density,
-      p.dot.size,
-      seed,
-      shapeKind,
-    ],
+    [p.generator, p.radius, p.spacing, p.density, p.dotSize, seed, shapeKind],
   );
 
-  // Mask dots to the chosen silhouette. For built-in/SVG shapes we hit-test
-  // against a Path2D; for image shapes we sample the alpha channel.
+  // Silhouette mask
   const masked = useMemo(() => {
     if (shapeKind === 'image') {
-      if (!imageBuf) return dots; // no image loaded yet — pass through
+      if (!imageBuf) return dots;
       return dots.filter((d) => {
-        const idx = imagePixel(d.x, d.y, imageBuf, p.composition.radius);
+        const idx = imagePixel(d.x, d.y, imageBuf, p.radius);
         return idx !== null && imageBuf.data[idx + 3] > 128;
       });
     }
-    if (shapeKind === 'circle' && p.composition.radius > 0) return dots;
-    const path = buildShape(shapeKind, p.composition.radius, p.composition.customPath);
+    if (shapeKind === 'circle' && p.radius > 0) return dots;
+    const path = buildShape(shapeKind, p.radius, p.customPath);
     const c = document.createElement('canvas');
     const ctx = c.getContext('2d');
     if (!ctx) return dots;
     return dots.filter((d) => ctx.isPointInPath(path, d.x, d.y));
-  }, [dots, shapeKind, p.composition.radius, p.composition.customPath, imageBuf]);
+  }, [dots, shapeKind, p.radius, p.customPath, imageBuf]);
 
-  // Sample the silhouette outline once per shape change; reused every frame
-  // by edge-driven ripples (no recomputation when only phase changes).
+  // Sample boundary once per shape change
   const boundary = useMemo(
-    () => sampleBoundary(shapeKind, p.composition.radius, p.composition.customPath),
-    [shapeKind, p.composition.radius, p.composition.customPath],
+    () => sampleBoundary(shapeKind, p.radius, p.customPath),
+    [shapeKind, p.radius, p.customPath],
   );
+
+  // Build extra ripple sources deterministically from seed + count + jitter.
+  // Sources are placed inside the shape's bounding circle at radius
+  // `extraSpread × shapeRadius`, with their wave depth/frequency varied so
+  // they interfere unevenly with the primary wave.
+  const extraSources = useMemo<ExtraSource[]>(() => {
+    if (p.extraCount === 0) return [];
+    const rand = mulberry32(p.extraSeed);
+    const arr: ExtraSource[] = [];
+    const maxR = p.radius * p.extraSpread;
+    for (let i = 0; i < p.extraCount; i++) {
+      const a = rand() * Math.PI * 2;
+      // sqrt() gives uniform area distribution inside the disk
+      const r = Math.sqrt(rand()) * maxR;
+      const freqMult = 1 + (rand() - 0.5) * 2 * p.extraFreqJitter;
+      const depthMult = 0.5 + rand() * 0.8;
+      arr.push({
+        x: Math.cos(a) * r,
+        y: Math.sin(a) * r,
+        frequency: Math.max(0.1, p.rippleFrequency * freqMult),
+        depth: p.rippleDepth * p.extraDepth * depthMult,
+        phaseOffset: rand() * Math.PI * 2,
+      });
+    }
+    return arr;
+  }, [
+    p.extraCount,
+    p.extraSeed,
+    p.extraDepth,
+    p.extraFreqJitter,
+    p.extraSpread,
+    p.radius,
+    p.rippleFrequency,
+    p.rippleDepth,
+  ]);
 
   const rippled = useMemo(
     () =>
       applyRipple(masked, {
-        kind: p.ripple.kind as RippleKind,
-        frequency: p.ripple.frequency,
-        depth: p.ripple.depth,
-        decay: p.ripple.decay,
+        kind: p.rippleKind,
+        frequency: p.rippleFrequency,
+        depth: p.rippleDepth,
+        decay: p.rippleDecay,
         phase,
         boundary,
+        extraSources,
       }),
-    [masked, p.ripple.kind, p.ripple.frequency, p.ripple.depth, p.ripple.decay, phase, boundary],
+    [
+      masked,
+      p.rippleKind,
+      p.rippleFrequency,
+      p.rippleDepth,
+      p.rippleDecay,
+      phase,
+      boundary,
+      extraSources,
+    ],
   );
 
+  // Render
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
@@ -290,22 +388,20 @@ export function Composition() {
     canvas.style.height = `${size}px`;
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
 
-    ctx.fillStyle = p.dot.background;
+    ctx.fillStyle = p.background;
     ctx.fillRect(0, 0, size, size);
 
     ctx.save();
     ctx.translate(size / 2, size / 2);
 
-    // 3D camera: yaw around Y, pitch around X, then perspective projection.
-    const yaw = (p.composition.rotation * Math.PI) / 180;
-    const pitch = (p.composition.tilt * Math.PI) / 180;
+    const yaw = (p.rotation * Math.PI) / 180;
+    const pitch = (p.tilt * Math.PI) / 180;
     const cosY = Math.cos(yaw);
     const sinY = Math.sin(yaw);
     const cosP = Math.cos(pitch);
     const sinP = Math.sin(pitch);
-    const focal = p.composition.perspective;
+    const focal = p.perspective;
 
-    // Project a point from shape-space to screen-space using yaw → pitch → perspective.
     const project = (x: number, y: number, z: number) => {
       const x1 = x * cosY + z * sinY;
       const z1 = -x * sinY + z * cosY;
@@ -315,29 +411,26 @@ export function Composition() {
       return { px: x1 * scale, py: y2 * scale, depth: z2, scale };
     };
 
-    const dotShape = p.dot.shape;
-    const lineHalfLen = (p.dot.lineLength * p.dot.size) / 2;
-    const lineAngleRad = (p.dot.lineAngle * Math.PI) / 180;
+    const dotShape = p.dotShape;
+    const lineHalfLen = (p.lineLength * p.dotSize) / 2;
+    const lineAngleRad = (p.lineAngle * Math.PI) / 180;
+    const sampleImage = p.mode === 'image' && imageBuf;
 
-    // Project all dots, then z-sort (painter's algorithm) so closer dots draw last.
     type P = {
       px: number;
       py: number;
       pr: number;
       depth: number;
       crest: number;
-      // Line endpoints (only populated when shape === 'line')
       ax?: number;
       ay?: number;
       bx?: number;
       by?: number;
-      // Sampled image color (only populated when Mode === 'image')
       ir?: number;
       ig?: number;
       ib?: number;
     };
     const projected: P[] = [];
-    const sampleImage = p.dot.mode === 'image' && imageBuf;
     let minDepth = Infinity;
     let maxDepth = -Infinity;
     let maxCrest = 0;
@@ -358,12 +451,7 @@ export function Composition() {
       };
 
       if (sampleImage) {
-        // Sample image color at the dot's ORIGINAL (pre-ripple) shape-space
-        // position so the image pattern stays fixed in space while the dots
-        // wave underneath it. Use d.x / d.y from the rippled record because
-        // edge/twist ripples may have moved XY; for radial-z ripples this is
-        // the same as the source.
-        const idx = imagePixel(d.x, d.y, imageBuf!, p.composition.radius);
+        const idx = imagePixel(d.x, d.y, imageBuf!, p.radius);
         if (idx !== null) {
           out.ir = imageBuf!.data[idx];
           out.ig = imageBuf!.data[idx + 1];
@@ -372,9 +460,6 @@ export function Composition() {
       }
 
       if (dotShape === 'line') {
-        // Orient each line along the radial direction (rotated by lineAngle).
-        // Lines lying in the shape's local plane → both endpoints share Z, so
-        // they foreshorten correctly under tilt by projecting both ends.
         const r2 = Math.hypot(d.x, d.y);
         const theta = r2 === 0 ? 0 : Math.atan2(d.y, d.x);
         const dx = Math.cos(theta + lineAngleRad) * lineHalfLen;
@@ -392,15 +477,15 @@ export function Composition() {
     projected.sort((a, b) => b.depth - a.depth);
 
     const depthRange = maxDepth - minDepth || 1;
-    const fade = p.dot.depthFade;
-    const glow = p.dot.crestGlow;
-    const baseAlpha = p.dot.opacity;
-    const heatmap = p.dot.mode === 'heatmap';
+    const fade = p.depthFade;
+    const glow = p.crestGlow;
+    const baseAlpha = p.opacity;
+    const heatmap = p.mode === 'heatmap';
 
-    if (!heatmap) ctx.fillStyle = p.dot.color;
-    const trough = hexToRgb(p.dot.troughColor);
-    const mid = hexToRgb(p.dot.midColor);
-    const crest = hexToRgb(p.dot.crestColor);
+    if (!heatmap && p.mode !== 'image') ctx.fillStyle = p.color;
+    const trough = hexToRgb(p.troughColor);
+    const mid = hexToRgb(p.midColor);
+    const crest = hexToRgb(p.crestColor);
 
     for (const d of projected) {
       const t = (d.depth - minDepth) / depthRange;
@@ -410,12 +495,11 @@ export function Composition() {
       const alpha = Math.max(0, Math.min(1, baseAlpha * depthAlpha * crestAlpha));
       if (alpha <= 0) continue;
 
-      if (p.dot.mode === 'image' && d.ir !== undefined) {
+      if (p.mode === 'image' && d.ir !== undefined) {
         const rgb = `rgb(${d.ir},${d.ig},${d.ib})`;
         ctx.fillStyle = rgb;
         ctx.strokeStyle = rgb;
       } else if (heatmap) {
-        // crestNorm is in [-1, 1]: -1 → trough, 0 → mid, +1 → crest
         const c =
           crestNorm >= 0
             ? lerpRgb(mid, crest, crestNorm)
@@ -424,8 +508,9 @@ export function Composition() {
         ctx.fillStyle = rgb;
         ctx.strokeStyle = rgb;
       } else if (dotShape === 'line') {
-        ctx.strokeStyle = p.dot.color;
+        ctx.strokeStyle = p.color;
       }
+
       ctx.globalAlpha = alpha;
 
       if (dotShape === 'square') {
@@ -447,25 +532,26 @@ export function Composition() {
     ctx.restore();
   }, [
     rippled,
-    p.dot.color,
-    p.dot.background,
-    p.dot.opacity,
-    p.dot.depthFade,
-    p.dot.crestGlow,
-    p.dot.mode,
-    p.dot.shape,
-    p.dot.lineLength,
-    p.dot.lineAngle,
+    p.color,
+    p.background,
+    p.opacity,
+    p.depthFade,
+    p.crestGlow,
+    p.mode,
+    p.troughColor,
+    p.midColor,
+    p.crestColor,
+    p.rotation,
+    p.tilt,
+    p.perspective,
+    p.dotShape,
+    p.lineLength,
+    p.lineAngle,
     imageBuf,
-    p.dot.troughColor,
-    p.dot.midColor,
-    p.dot.crestColor,
-    p.composition.rotation,
-    p.composition.tilt,
-    p.composition.perspective,
+    p.radius,
   ]);
 
-  const needsImage = shapeKind === 'image' || p.dot.mode === 'image';
+  const needsImage = shapeKind === 'image' || p.mode === 'image';
 
   return (
     <div
@@ -474,11 +560,22 @@ export function Composition() {
         height: '100vh',
         display: 'grid',
         placeItems: 'center',
-        background: p.dot.background,
+        background: p.background,
         transition: 'background 0.2s',
       }}
     >
       <canvas ref={canvasRef} />
+      <div
+        ref={paneContainerRef}
+        style={{
+          position: 'fixed',
+          top: 16,
+          right: 16,
+          width: 280,
+          maxHeight: 'calc(100vh - 32px)',
+          overflowY: 'auto',
+        }}
+      />
       {needsImage && (
         <div
           style={{
@@ -512,10 +609,16 @@ export function Composition() {
           >
             {imageBuf ? 'Replace Image' : 'Load Image'}
           </button>
-          <span style={{ opacity: 0.7, maxWidth: 200, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-            {imageBuf
-              ? `${imageName ?? 'image'} (${imageBuf.w}×${imageBuf.h})`
-              : 'No image loaded'}
+          <span
+            style={{
+              opacity: 0.7,
+              maxWidth: 200,
+              overflow: 'hidden',
+              textOverflow: 'ellipsis',
+              whiteSpace: 'nowrap',
+            }}
+          >
+            {imageBuf ? `${imageName ?? 'image'} (${imageBuf.w}×${imageBuf.h})` : 'No image loaded'}
           </span>
           {imageBuf && (
             <button
@@ -545,7 +648,7 @@ export function Composition() {
             onChange={(e) => {
               const file = e.target.files?.[0];
               if (file) handleFile(file);
-              e.target.value = ''; // allow re-selecting the same file
+              e.target.value = '';
             }}
           />
         </div>
