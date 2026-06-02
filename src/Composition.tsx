@@ -203,23 +203,25 @@ const DEFAULTS = {
   // Ribbon style. Each ribbon is a horizontal band rendered as `strands`
   // parallel lines; the band twists about its length axis (into Z) so it
   // reads as a twirling streamer, and the wave phase animates the flow.
-  inkRibbonCount: 14,
-  inkRibbonWidth: 90,
-  inkRibbonAmplitude: 80,
-  inkRibbonWaveFreq: 1.5, // vertical wave cycles across the span
-  inkRibbonTwist: 2.5, // twist cycles across the span
-  inkRibbonStrands: 16, // parallel lines across the ribbon width
+  // Defaults favour few wide ribbons (1–6): each ribbon is a dense strand
+  // sheet spanning the canvas, so the droplet ripple reads from just 1–2.
+  inkRibbonCount: 2,
+  inkRibbonWidth: 560, // wide enough that one ribbon ≈ the whole surface
+  inkRibbonAmplitude: 28, // gentle base undulation of the sheet
+  inkRibbonWaveFreq: 1, // vertical wave cycles across the span
+  inkRibbonTwist: 0.6, // mild twist (crank up for the twirling-streamer look)
+  inkRibbonStrands: 110, // dense strands = the ripple contour lines
   inkRibbonSpan: 1.2, // horizontal length as a fraction of 2·radius
-  inkRibbonSpread: 0.7, // vertical scatter of ribbons (fraction of radius)
+  inkRibbonSpread: 0.3, // keep the few ribbons near centre so they overlap
   inkRibbonAnimate: false,
   inkRibbonSpeed: 0.6,
   // Droplet ripple — concentric waves emanating from the canvas centre that
   // expand outward (and animate). Distance-from-centre based, so it ripples
   // symmetrically to every side. Rides mostly in Z so tilt shows the relief.
   // 0 amp = off.
-  inkRibbonRippleAmp: 22,
-  inkRibbonRippleFreq: 4, // ring count from centre to canvas edge
-  inkRibbonRippleFalloff: 1, // how fast the droplet energy fades outward (0 = none)
+  inkRibbonRippleAmp: 30,
+  inkRibbonRippleFreq: 6, // ring count from centre to canvas edge
+  inkRibbonRippleFalloff: 1.1, // how fast the droplet energy fades outward (0 = none)
   // How strongly the Canvas → Shape silhouette DEFORMS the ink field.
   // 0 = ignore shape (pure circular field); 1 = fully squish the ink into the
   // silhouette outline. This warps geometry rather than masking, so strokes
@@ -655,8 +657,11 @@ export function Composition() {
     const rib = ink.addFolder({ title: 'Ribbons', expanded: true });
     tag(rib, RIBBONS);
     rib.addBinding(params, 'inkRibbonCount', { label: 'Count', min: 1, max: 80, step: 1 });
-    rib.addBinding(params, 'inkRibbonWidth', { label: 'Width', min: 4, max: 400, step: 1 });
-    rib.addBinding(params, 'inkRibbonStrands', { label: 'Strands', min: 1, max: 60, step: 1 });
+    // Width and Strands ranges are large so a SINGLE ribbon can span the
+    // canvas as a dense strand sheet — that's how the droplet ripple reads
+    // with just 1–2 ribbons (the strands are the ripple contour lines).
+    rib.addBinding(params, 'inkRibbonWidth', { label: 'Width', min: 4, max: 1400, step: 1 });
+    rib.addBinding(params, 'inkRibbonStrands', { label: 'Strands', min: 1, max: 300, step: 1 });
     rib.addBinding(params, 'inkRibbonAmplitude', { label: 'Amplitude', min: 0, max: 400, step: 1 });
     rib.addBinding(params, 'inkRibbonWaveFreq', { label: 'Wave Freq', min: 0, max: 8, step: 0.05 });
     rib.addBinding(params, 'inkRibbonTwist', { label: 'Twist', min: 0, max: 10, step: 0.05 });
