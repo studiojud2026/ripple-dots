@@ -182,6 +182,22 @@ const DEFAULTS = {
   // atmospheric fog — loops farther from the camera lose alpha and recede.
   inkDepthSpread: 0,
   inkDepthFade: 0.4,
+  // Ink sub-style. 'loops' = the centered mathematical loops (default);
+  // 'ribbons' = wide twirling horizontal bands that flow left↔right.
+  inkStyle: 'loops' as 'loops' | 'ribbons',
+  // Ribbon style. Each ribbon is a horizontal band rendered as `strands`
+  // parallel lines; the band twists about its length axis (into Z) so it
+  // reads as a twirling streamer, and the wave phase animates the flow.
+  inkRibbonCount: 14,
+  inkRibbonWidth: 90,
+  inkRibbonAmplitude: 80,
+  inkRibbonWaveFreq: 1.5, // vertical wave cycles across the span
+  inkRibbonTwist: 2.5, // twist cycles across the span
+  inkRibbonStrands: 16, // parallel lines across the ribbon width
+  inkRibbonSpan: 1.2, // horizontal length as a fraction of 2·radius
+  inkRibbonSpread: 0.7, // vertical scatter of ribbons (fraction of radius)
+  inkRibbonAnimate: false,
+  inkRibbonSpeed: 0.6,
   // How strongly the Canvas → Shape silhouette DEFORMS the ink field.
   // 0 = ignore shape (pure circular field); 1 = fully squish the ink into the
   // silhouette outline. This warps geometry rather than masking, so strokes
@@ -210,6 +226,9 @@ export function Composition() {
   // setter on every blade.
   const dotBladesRef = useRef<{ hidden: boolean }[]>([]);
   const inkBladesRef = useRef<{ hidden: boolean }[]>([]);
+  // Ink sub-style blades (loops vs ribbons) toggled by inkStyle.
+  const inkLoopBladesRef = useRef<{ hidden: boolean }[]>([]);
+  const inkRibbonBladesRef = useRef<{ hidden: boolean }[]>([]);
   // The render effect stores its drawing closure here so PNG export can replay
   // it onto an offscreen canvas at a higher resolution.
   const drawSceneRef = useRef<((ctx: CanvasRenderingContext2D, size: number) => void) | null>(
@@ -436,24 +455,39 @@ export function Composition() {
     // ──────────── INK MODE ────────────
     const inkBlades: { hidden: boolean }[] = [];
 
+    const inkLoopBlades: { hidden: boolean }[] = [];
+    const inkRibbonBlades: { hidden: boolean }[] = [];
+
     const ink = pane.addFolder({ title: 'Ink' });
     inkBlades.push(ink);
+    ink.addBinding(params, 'inkStyle', {
+      label: 'Style',
+      options: { Loops: 'loops', Ribbons: 'ribbons' },
+    });
     ink.addBinding(params, 'inkCount', { label: 'Count', min: 1, max: 2500, step: 1 });
     ink.addBinding(params, 'inkColor', { label: 'Ink Color' });
-    ink.addBinding(params, 'inkSizeMin', { label: 'Size Min', min: 0, max: 600, step: 1 });
-    ink.addBinding(params, 'inkSizeMax', { label: 'Size Max', min: 10, max: 800, step: 1 });
-    ink.addBinding(params, 'inkRadiusShrink', {
-      label: 'Radius Shrink',
-      min: 0,
-      max: 1,
-      step: 0.01,
-    });
-    ink.addBinding(params, 'inkAspectVariance', {
-      label: 'Aspect Variance',
-      min: 0,
-      max: 0.9,
-      step: 0.01,
-    });
+    inkLoopBlades.push(
+      ink.addBinding(params, 'inkSizeMin', { label: 'Size Min', min: 0, max: 600, step: 1 }),
+    );
+    inkLoopBlades.push(
+      ink.addBinding(params, 'inkSizeMax', { label: 'Size Max', min: 10, max: 800, step: 1 }),
+    );
+    inkLoopBlades.push(
+      ink.addBinding(params, 'inkRadiusShrink', {
+        label: 'Radius Shrink',
+        min: 0,
+        max: 1,
+        step: 0.01,
+      }),
+    );
+    inkLoopBlades.push(
+      ink.addBinding(params, 'inkAspectVariance', {
+        label: 'Aspect Variance',
+        min: 0,
+        max: 0.9,
+        step: 0.01,
+      }),
+    );
     ink.addBinding(params, 'inkAlpha', { label: 'Stroke Alpha', min: 0.005, max: 0.5, step: 0.005 });
     ink.addBinding(params, 'inkLineWidth', { label: 'Line Width', min: 0.5, max: 30, step: 0.1 });
     ink.addBinding(params, 'inkLineWidthVariance', {
@@ -494,6 +528,7 @@ export function Composition() {
     // at inkCount points. Param A/B/C/D mean different things per mode (see
     // INK_PATH_PARAM_LABELS in placement.ts and the README).
     const place = ink.addFolder({ title: 'Placement', expanded: true });
+    inkLoopBlades.push(place);
     place.addBinding(params, 'inkPath', {
       label: 'Path',
       options: Object.fromEntries(INK_PATH_OPTIONS.map((o) => [o.label, o.value])),
@@ -551,6 +586,7 @@ export function Composition() {
     // visually reads as a single self-contained section, NOT shared with the
     // dot Ripple/Extra Ripples folders above.
     const inkRip = ink.addFolder({ title: 'Ripple', expanded: false });
+    inkLoopBlades.push(inkRip);
     inkRip.addBinding(params, 'inkRippleKind', {
       label: 'Kind',
       options: {
@@ -580,6 +616,20 @@ export function Composition() {
     inkRip.addBinding(params, 'inkRippleAnimate', { label: 'Animate' });
     inkRip.addBinding(params, 'inkRippleSpeed', { label: 'Speed', min: 0, max: 5, step: 0.01 });
 
+    // ──── Ribbon sub-folder (ink style = ribbons) ────
+    const rib = ink.addFolder({ title: 'Ribbons', expanded: true });
+    inkRibbonBlades.push(rib);
+    rib.addBinding(params, 'inkRibbonCount', { label: 'Count', min: 1, max: 80, step: 1 });
+    rib.addBinding(params, 'inkRibbonWidth', { label: 'Width', min: 4, max: 400, step: 1 });
+    rib.addBinding(params, 'inkRibbonStrands', { label: 'Strands', min: 1, max: 60, step: 1 });
+    rib.addBinding(params, 'inkRibbonAmplitude', { label: 'Amplitude', min: 0, max: 400, step: 1 });
+    rib.addBinding(params, 'inkRibbonWaveFreq', { label: 'Wave Freq', min: 0, max: 8, step: 0.05 });
+    rib.addBinding(params, 'inkRibbonTwist', { label: 'Twist', min: 0, max: 10, step: 0.05 });
+    rib.addBinding(params, 'inkRibbonSpan', { label: 'Span', min: 0.5, max: 2, step: 0.01 });
+    rib.addBinding(params, 'inkRibbonSpread', { label: 'Spread', min: 0, max: 1, step: 0.01 });
+    rib.addBinding(params, 'inkRibbonAnimate', { label: 'Animate (L→R)' });
+    rib.addBinding(params, 'inkRibbonSpeed', { label: 'Speed', min: 0, max: 5, step: 0.01 });
+
     // ──────────── EXPORT (shared) ────────────
     // Absolute output resolutions — dpr-independent, so what you pick is what
     // you get regardless of screen or window size.
@@ -590,11 +640,16 @@ export function Composition() {
 
     dotBladesRef.current = dotBlades;
     inkBladesRef.current = inkBlades;
+    inkLoopBladesRef.current = inkLoopBlades;
+    inkRibbonBladesRef.current = inkRibbonBlades;
     // Initial visibility — set BEFORE wiring change listener so the first
     // render sees the right state.
     const inDots = params.renderMode === 'dots';
     dotBlades.forEach((b) => (b.hidden = !inDots));
     inkBlades.forEach((b) => (b.hidden = inDots));
+    const ribbons = params.inkStyle === 'ribbons';
+    inkLoopBlades.forEach((b) => (b.hidden = ribbons));
+    inkRibbonBlades.forEach((b) => (b.hidden = !ribbons));
 
     pane.on('change', () => force());
     return () => {
@@ -610,11 +665,27 @@ export function Composition() {
     const inDots = p.renderMode === 'dots';
     dotBladesRef.current.forEach((b) => (b.hidden = !inDots));
     inkBladesRef.current.forEach((b) => (b.hidden = inDots));
-  }, [p.renderMode]);
+    // Within ink mode, swap loop-only vs ribbon-only controls.
+    const ribbons = p.inkStyle === 'ribbons';
+    inkLoopBladesRef.current.forEach((b) => (b.hidden = ribbons));
+    inkRibbonBladesRef.current.forEach((b) => (b.hidden = !ribbons));
+  }, [p.renderMode, p.inkStyle]);
 
   // Phase animation — drives whichever mode's animate toggle is on.
-  const animate = p.renderMode === 'ink' ? p.inkRippleAnimate : p.rippleAnimate;
-  const speed = p.renderMode === 'ink' ? p.inkRippleSpeed : p.rippleSpeed;
+  let animate: boolean;
+  let speed: number;
+  if (p.renderMode === 'ink') {
+    if (p.inkStyle === 'ribbons') {
+      animate = p.inkRibbonAnimate;
+      speed = p.inkRibbonSpeed;
+    } else {
+      animate = p.inkRippleAnimate;
+      speed = p.inkRippleSpeed;
+    }
+  } else {
+    animate = p.rippleAnimate;
+    speed = p.rippleSpeed;
+  }
   useEffect(() => {
     if (!animate) return;
     let raf = 0;
@@ -740,7 +811,7 @@ export function Composition() {
     dl: number;
   };
   const loops = useMemo<Loop[]>(() => {
-    if (p.renderMode !== 'ink') return [];
+    if (p.renderMode !== 'ink' || p.inkStyle === 'ribbons') return [];
     // Centers walk a deterministic mathematical path (Lissajous, spiral, rose,
     // trochoid, attractor, …). Path radius is the canvas radius so the outer
     // sweep fills the silhouette.
@@ -793,6 +864,7 @@ export function Composition() {
     p.inkHueShift,
     p.inkLightnessShift,
     p.inkDepthSpread,
+    p.inkStyle,
     p.inkPath,
     p.inkPathA,
     p.inkPathB,
@@ -888,6 +960,95 @@ export function Composition() {
       ctx.lineCap = 'round';
       ctx.lineJoin = 'round';
       if (p.inkBlur > 0) ctx.filter = `blur(${p.inkBlur}px)`;
+
+      // ──────────── RIBBON STYLE ────────────
+      // Horizontal bands that span the canvas and twist about their length
+      // axis. Each ribbon is drawn as `strands` parallel lines; the cross-
+      // section twists into Z so the band reads as a twirling streamer, and
+      // the wave phase animates the left↔right flow.
+      if (p.inkStyle === 'ribbons') {
+        const rand = mulberry32(p.inkSeed);
+        const span = p.radius * 2 * p.inkRibbonSpan;
+        const x0 = -span / 2;
+        const nSamp = Math.max(2, p.inkVertices);
+        const strands = Math.max(1, p.inkRibbonStrands);
+        const halfW = p.inkRibbonWidth / 2;
+        const amp = p.inkRibbonAmplitude;
+        const waveK = span > 0 ? (p.inkRibbonWaveFreq * Math.PI * 2) / span : 0;
+        const twistK = span > 0 ? (p.inkRibbonTwist * Math.PI * 2) / span : 0;
+        const vSpread = p.radius * p.inkRibbonSpread;
+        const fade = p.inkDepthFade;
+
+        const project = (x: number, y: number, z: number) => {
+          const sx = x * cosS - y * sinS;
+          const sy = x * sinS + y * cosS;
+          const py3 = sy * cosP - z * sinP;
+          const pz3 = sy * sinP + z * cosP;
+          const scale = focal / Math.max(1, focal + pz3);
+          return { x: sx * scale, y: py3 * scale, depth: pz3 };
+        };
+
+        // Pass 1: build every strand polyline and its mid-depth for fog.
+        type Strand = { pts: { x: number; y: number }[]; mid: number; dh: number; dl: number };
+        const built: Strand[] = [];
+        let minD = Infinity;
+        let maxD = -Infinity;
+        const midIdx = nSamp >> 1;
+        for (let ri = 0; ri < p.inkRibbonCount; ri++) {
+          const baseY = (rand() * 2 - 1) * vSpread;
+          const phaseOff = rand() * Math.PI * 2;
+          const dh = (rand() - 0.5) * 2 * p.inkHueShift;
+          const dl = (rand() - 0.5) * 2 * p.inkLightnessShift;
+          for (let s = 0; s < strands; s++) {
+            const v = strands === 1 ? 0 : (s / (strands - 1)) * 2 - 1; // -1..1 across width
+            const pts = new Array(nSamp);
+            let mid = 0;
+            for (let i = 0; i < nSamp; i++) {
+              const fx = i / (nSamp - 1);
+              const x = x0 + fx * span;
+              // Travelling wave: sin(kx - ωt) moves crests to +x (left→right).
+              const cy = baseY + amp * Math.sin(x * waveK - phase + phaseOff);
+              const tw = x * twistK - phase * 0.6 + phaseOff;
+              const yy = cy + v * halfW * Math.cos(tw);
+              const zz = v * halfW * Math.sin(tw);
+              const pr = project(x, yy, zz);
+              pts[i] = pr;
+              if (i === midIdx) mid = pr.depth;
+            }
+            if (mid < minD) minD = mid;
+            if (mid > maxD) maxD = mid;
+            built.push({ pts, mid, dh, dl });
+          }
+        }
+        const dRange = maxD - minD || 1;
+
+        // Pass 2: stroke, fading far strands toward the background.
+        const lwBaseR = p.inkLineWidth;
+        const widthRandR = mulberry32(p.inkSeed ^ 0x5b);
+        for (const b of built) {
+          const fog = fade > 0 ? 1 - fade * ((b.mid - minD) / dRange) : 1;
+          const wJitter = (widthRandR() - 0.5) * 2 * p.inkLineWidthVariance;
+          ctx.lineWidth = Math.max(0.3, lwBaseR * (1 + wJitter));
+          ctx.strokeStyle = hslString(
+            baseHsl.h + b.dh,
+            baseHsl.s,
+            baseHsl.l + b.dl,
+            p.inkAlpha * fog,
+          );
+          ctx.beginPath();
+          for (let i = 0; i < b.pts.length; i++) {
+            const pt = b.pts[i];
+            if (i === 0) ctx.moveTo(pt.x, pt.y);
+            else ctx.lineTo(pt.x, pt.y);
+          }
+          ctx.stroke();
+        }
+
+        ctx.filter = 'none';
+        ctx.globalCompositeOperation = 'source-over';
+        ctx.restore();
+        return;
+      }
 
       const nVerts = p.inkVertices;
       const lwBase = p.inkLineWidth;
@@ -1220,6 +1381,15 @@ export function Composition() {
     p.inkPerspective,
     p.inkDepthSpread,
     p.inkDepthFade,
+    p.inkStyle,
+    p.inkRibbonCount,
+    p.inkRibbonWidth,
+    p.inkRibbonStrands,
+    p.inkRibbonAmplitude,
+    p.inkRibbonWaveFreq,
+    p.inkRibbonTwist,
+    p.inkRibbonSpan,
+    p.inkRibbonSpread,
     p.inkSeed,
     p.customPath,
     boundary,
