@@ -3,6 +3,7 @@ import { Pane } from 'tweakpane';
 import { generate, type GeneratorKind } from './generators';
 import { applyRipple, type ExtraSource, type RippleKind } from './ripples';
 import { buildShape, sampleBoundary, type ShapeKind } from './shapes';
+import { generatePath, INK_PATH_OPTIONS, type InkPath } from './placement';
 
 type ImageBuffer = { data: Uint8ClampedArray; w: number; h: number };
 type RGB = { r: number; g: number; b: number };
@@ -132,22 +133,39 @@ const DEFAULTS = {
   extraSpread: 0.7, // fraction of radius the sources can wander to
   extraSeed: 1,
   // Ink mode — appearance
-  inkCount: 80,
-  inkColor: '#d946a0',
-  inkSizeMin: 80,
-  inkSizeMax: 240,
-  inkAspectVariance: 0.55,
-  inkAlpha: 0.08,
-  inkLineWidth: 5, // base stroke width; per-loop variance jitters it
-  inkLineWidthVariance: 0.6, // ± fraction of lineWidth
-  inkHueShift: 30, // ± degrees of hue jitter per loop
-  inkLightnessShift: 18, // ± percent lightness jitter per loop
-  inkBlur: 2, // canvas filter blur in px — main source of the soft ink falloff
-  inkGlowWidth: 0, // extra wide low-alpha pass behind each line; 0 disables
+  // Defaults now target the reference look: crisp 1px strokes, no blur,
+  // low alpha for clean overlap stacking on light backgrounds.
+  inkCount: 90,
+  inkColor: '#c83a8d',
+  inkSizeMin: 60, // innermost circle radius at the end of the path
+  inkSizeMax: 360, // outermost circle radius at the start of the path
+  inkAspectVariance: 0, // pure circles by default; ramp up for ellipses
+  inkAlpha: 0.14,
+  inkLineWidth: 1.5,
+  inkLineWidthVariance: 0,
+  inkHueShift: 6, // tight hue variation matches the magenta reference
+  inkLightnessShift: 8,
+  inkBlur: 0, // canvas blur kills intersection definition — opt-in only
+  inkGlowWidth: 0,
   inkGlowAlpha: 0.04,
   inkBlend: 'multiply' as 'multiply' | 'screen' | 'source-over' | 'lighter',
-  inkVertices: 80,
-  inkSeed: 7,
+  inkVertices: 96,
+  inkSeed: 1,
+  // Ink mode — placement (the math that puts loop centers in space)
+  inkPath: 'lissajous' as InkPath,
+  inkPathA: 3, // for Lissajous default: 3:2 gives the "two eye" pattern
+  inkPathB: 2,
+  inkPathC: 0,
+  inkPathD: 0,
+  inkTurns: 1,
+  inkPathPhase: 0,
+  inkCenterShrink: 0, // 0 = path fills full bounds; 1 = converges to origin
+  // The placement path fits inside a circle of radius = canvas radius ·
+  // inkPathScale. Small values keep loop centers tightly clustered near the
+  // origin so big circles overlap heavily across the whole canvas (the look
+  // in the reference); 1 spreads centers all the way out.
+  inkPathScale: 0.35,
+  inkRadiusShrink: 0.65,
   // Ink mode — its OWN ripple controls, completely independent from dot ripples
   inkRippleKind: 'twist' as RippleKind,
   inkRippleFrequency: 0.6,
@@ -347,10 +365,16 @@ export function Composition() {
 
     const ink = pane.addFolder({ title: 'Ink' });
     inkBlades.push(ink);
-    ink.addBinding(params, 'inkCount', { label: 'Count', min: 1, max: 200, step: 1 });
+    ink.addBinding(params, 'inkCount', { label: 'Count', min: 1, max: 400, step: 1 });
     ink.addBinding(params, 'inkColor', { label: 'Ink Color' });
-    ink.addBinding(params, 'inkSizeMin', { label: 'Size Min', min: 10, max: 400, step: 1 });
-    ink.addBinding(params, 'inkSizeMax', { label: 'Size Max', min: 10, max: 600, step: 1 });
+    ink.addBinding(params, 'inkSizeMin', { label: 'Size Min', min: 0, max: 600, step: 1 });
+    ink.addBinding(params, 'inkSizeMax', { label: 'Size Max', min: 10, max: 800, step: 1 });
+    ink.addBinding(params, 'inkRadiusShrink', {
+      label: 'Radius Shrink',
+      min: 0,
+      max: 1,
+      step: 0.01,
+    });
     ink.addBinding(params, 'inkAspectVariance', {
       label: 'Aspect Variance',
       min: 0,
@@ -390,6 +414,39 @@ export function Composition() {
       params.inkSeed = Math.floor(Math.random() * 9999);
       pane.refresh();
       force();
+    });
+
+    // ──── Placement sub-folder ────
+    // Where loop centers go. Each path mode is a deterministic curve sampled
+    // at inkCount points. Param A/B/C/D mean different things per mode (see
+    // INK_PATH_PARAM_LABELS in placement.ts and the README).
+    const place = ink.addFolder({ title: 'Placement', expanded: true });
+    place.addBinding(params, 'inkPath', {
+      label: 'Path',
+      options: Object.fromEntries(INK_PATH_OPTIONS.map((o) => [o.label, o.value])),
+    });
+    place.addBinding(params, 'inkPathA', { label: 'Param A', min: -5, max: 8, step: 0.01 });
+    place.addBinding(params, 'inkPathB', { label: 'Param B', min: -5, max: 8, step: 0.01 });
+    place.addBinding(params, 'inkPathC', { label: 'Param C', min: -3, max: 3, step: 0.01 });
+    place.addBinding(params, 'inkPathD', { label: 'Param D', min: -3, max: 3, step: 0.01 });
+    place.addBinding(params, 'inkTurns', { label: 'Turns', min: 0.1, max: 12, step: 0.1 });
+    place.addBinding(params, 'inkPathPhase', {
+      label: 'Phase',
+      min: 0,
+      max: Math.PI * 2,
+      step: 0.01,
+    });
+    place.addBinding(params, 'inkPathScale', {
+      label: 'Path Scale',
+      min: 0,
+      max: 1,
+      step: 0.01,
+    });
+    place.addBinding(params, 'inkCenterShrink', {
+      label: 'Center Shrink',
+      min: 0,
+      max: 1,
+      step: 0.01,
     });
 
     // Ink-only ripple settings — nested inside the Ink folder so the panel
@@ -577,28 +634,42 @@ export function Composition() {
   };
   const loops = useMemo<Loop[]>(() => {
     if (p.renderMode !== 'ink') return [];
-    const rand = mulberry32(p.inkSeed);
-    const arr: Loop[] = [];
-    const sizeMin = Math.min(p.inkSizeMin, p.inkSizeMax);
+    // Centers walk a deterministic mathematical path (Lissajous, spiral, rose,
+    // trochoid, attractor, …). Path radius is the canvas radius so the outer
+    // sweep fills the silhouette.
+    const centers = generatePath(p.inkPath, {
+      count: p.inkCount,
+      // pathScale is the fraction of canvas radius the path actually fills;
+      // smaller value = tighter center cluster, bigger overlap density.
+      radius: p.radius * p.inkPathScale,
+      pathA: p.inkPathA,
+      pathB: p.inkPathB,
+      pathC: p.inkPathC,
+      pathD: p.inkPathD,
+      turns: p.inkTurns,
+      phase: p.inkPathPhase,
+      centerShrink: p.inkCenterShrink,
+    });
+    // Color jitter is still seeded so Shuffle Ink keeps producing variations
+    // without disturbing the placement geometry.
+    const colorRand = mulberry32(p.inkSeed);
+    const aspectRand = mulberry32(p.inkSeed ^ 0x9e3779b9);
     const sizeMax = Math.max(p.inkSizeMin, p.inkSizeMax);
-    // Loop centers are placed inside the shape's bounding circle scaled by 0.7
-    // so most loops mostly stay inside the silhouette (the clip mask catches
-    // the rest). Uniform area distribution via sqrt-of-uniform radius.
-    const placement = p.radius * 0.7;
-    for (let i = 0; i < p.inkCount; i++) {
-      const ang = rand() * Math.PI * 2;
-      const rr = Math.sqrt(rand()) * placement;
-      const cx = Math.cos(ang) * rr;
-      const cy = Math.sin(ang) * rr;
-      const size = sizeMin + rand() * (sizeMax - sizeMin);
-      // aspect varies above and below 1 (taller vs wider)
-      const aspect = 1 + (rand() - 0.5) * 2 * p.inkAspectVariance;
-      const a = size * (aspect >= 1 ? 1 : aspect);
-      const b = size * (aspect >= 1 ? 1 / aspect : 1);
-      const rotation = rand() * Math.PI * 2;
-      const dh = (rand() - 0.5) * 2 * p.inkHueShift;
-      const dl = (rand() - 0.5) * 2 * p.inkLightnessShift;
-      arr.push({ cx, cy, a, b, rotation, dh, dl });
+    const sizeMin = Math.min(p.inkSizeMin, p.inkSizeMax);
+    const arr: Loop[] = [];
+    for (let i = 0; i < centers.length; i++) {
+      const c = centers[i];
+      const t = centers.length === 1 ? 0 : i / (centers.length - 1);
+      // Linear radius taper along the path: outer → inner.
+      const baseR = sizeMax + (sizeMin - sizeMax) * t * p.inkRadiusShrink;
+      const aspect =
+        p.inkAspectVariance === 0 ? 1 : 1 + (aspectRand() - 0.5) * 2 * p.inkAspectVariance;
+      const a = baseR * (aspect >= 1 ? 1 : aspect);
+      const b = baseR * (aspect >= 1 ? 1 / aspect : 1);
+      const rotation = p.inkAspectVariance === 0 ? 0 : aspectRand() * Math.PI * 2;
+      const dh = (colorRand() - 0.5) * 2 * p.inkHueShift;
+      const dl = (colorRand() - 0.5) * 2 * p.inkLightnessShift;
+      arr.push({ cx: c.x, cy: c.y, a, b, rotation, dh, dl });
     }
     return arr;
   }, [
@@ -607,9 +678,19 @@ export function Composition() {
     p.inkSeed,
     p.inkSizeMin,
     p.inkSizeMax,
+    p.inkRadiusShrink,
     p.inkAspectVariance,
     p.inkHueShift,
     p.inkLightnessShift,
+    p.inkPath,
+    p.inkPathA,
+    p.inkPathB,
+    p.inkPathC,
+    p.inkPathD,
+    p.inkTurns,
+    p.inkPathPhase,
+    p.inkPathScale,
+    p.inkCenterShrink,
     p.radius,
   ]);
 
