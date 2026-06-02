@@ -22,6 +22,51 @@ export const SHAPE_OPTIONS: { value: ShapeKind; label: string }[] = [
 export type Point = { x: number; y: number };
 
 /**
+ * Build a polar radius lookup from boundary samples: for any direction θ the
+ * table gives the silhouette's distance from the origin in that direction.
+ * Used to WARP (not mask) a field into a shape — multiply a point's radius by
+ * shapeRadius(θ) / boundingRadius to squish the field into the silhouette.
+ *
+ * We take the MAX radius per angular bucket so concave/star shapes keep their
+ * outermost extent (points), and fill any empty buckets from their neighbours.
+ */
+export function buildPolarRadius(boundary: Point[], buckets = 240): Float64Array {
+  const table = new Float64Array(buckets);
+  for (const pt of boundary) {
+    const ang = Math.atan2(pt.y, pt.x); // -π..π
+    const r = Math.hypot(pt.x, pt.y);
+    let idx = Math.floor(((ang + Math.PI) / (2 * Math.PI)) * buckets);
+    if (idx >= buckets) idx = buckets - 1;
+    if (idx < 0) idx = 0;
+    if (r > table[idx]) table[idx] = r;
+  }
+  // Forward/backward fill empty buckets so lookups never return 0.
+  let last = 0;
+  for (let i = 0; i < buckets; i++) {
+    if (table[i] === 0) table[i] = last;
+    else last = table[i];
+  }
+  // Wrap-around: if the first buckets were empty, fill from the end.
+  if (table[0] === 0) table[0] = last;
+  for (let i = 0; i < buckets; i++) {
+    if (table[i] === 0) table[i] = table[(i - 1 + buckets) % buckets] || last;
+  }
+  return table;
+}
+
+/** Interpolated lookup into a buildPolarRadius table for a given angle. */
+export function polarRadiusAt(table: Float64Array, angle: number): number {
+  const buckets = table.length;
+  const f = ((angle + Math.PI) / (2 * Math.PI)) * buckets;
+  const i0 = Math.floor(f) % buckets;
+  const i1 = (i0 + 1) % buckets;
+  const frac = f - Math.floor(f);
+  const a = table[(i0 + buckets) % buckets];
+  const b = table[i1];
+  return a + (b - a) * frac;
+}
+
+/**
  * Sample evenly-spaced points along the shape's outline (centered at origin,
  * same scale as the Path2D from `buildShape`). Used by edge-driven ripples to
  * compute distance-to-nearest-edge per dot.

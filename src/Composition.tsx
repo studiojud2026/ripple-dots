@@ -2,7 +2,13 @@ import { useEffect, useMemo, useReducer, useRef, useState } from 'react';
 import { Pane } from 'tweakpane';
 import { generate, type GeneratorKind } from './generators';
 import { applyRipple, type ExtraSource, type RippleKind } from './ripples';
-import { buildShape, sampleBoundary, type ShapeKind } from './shapes';
+import {
+  buildShape,
+  buildPolarRadius,
+  polarRadiusAt,
+  sampleBoundary,
+  type ShapeKind,
+} from './shapes';
 import { generatePath, INK_PATH_OPTIONS, type InkPath } from './placement';
 
 type ImageBuffer = { data: Uint8ClampedArray; w: number; h: number };
@@ -166,6 +172,11 @@ const DEFAULTS = {
   // in the reference); 1 spreads centers all the way out.
   inkPathScale: 0.35,
   inkRadiusShrink: 0.65,
+  // How strongly the Canvas → Shape silhouette DEFORMS the ink field.
+  // 0 = ignore shape (pure circular field); 1 = fully squish the ink into the
+  // silhouette outline. This warps geometry rather than masking, so strokes
+  // are never clipped — they bend to follow the shape.
+  inkShapeInfluence: 1,
   // Ink mode — its OWN ripple controls, completely independent from dot ripples
   inkRippleKind: 'twist' as RippleKind,
   inkRippleFrequency: 0.6,
@@ -448,6 +459,12 @@ export function Composition() {
       max: 1,
       step: 0.01,
     });
+    place.addBinding(params, 'inkShapeInfluence', {
+      label: 'Shape Influence',
+      min: 0,
+      max: 1,
+      step: 0.01,
+    });
 
     // Ink-only ripple settings — nested inside the Ink folder so the panel
     // visually reads as a single self-contained section, NOT shared with the
@@ -724,9 +741,15 @@ export function Composition() {
       const yaw = (p.rotation * Math.PI) / 180;
       if (yaw !== 0) ctx.rotate(yaw);
 
-      // Clip to the active shape silhouette so loops fade out at the edges.
-      const clipPath = buildShape(shapeKind, p.radius, p.customPath);
-      ctx.clip(clipPath);
+      // Shape DEFORMS the ink field instead of masking it. Build a polar
+      // radius table from the silhouette; each point's distance-from-origin is
+      // scaled by mix(1, shapeRadius(θ)/radius, influence) so the whole field
+      // is squished into the shape outline — no clipping, strokes bend to
+      // follow the contour. A circle gives factor 1 everywhere (no-op).
+      const influence = p.inkShapeInfluence;
+      const useShapeWarp = influence > 0 && shapeKind !== 'circle' && shapeKind !== 'image';
+      const polar = useShapeWarp ? buildPolarRadius(boundary) : null;
+      const invRadius = p.radius > 0 ? 1 / p.radius : 0;
 
       const baseHsl = rgbToHsl(hexToRgb(p.inkColor));
       ctx.globalCompositeOperation = p.inkBlend;
@@ -791,6 +814,18 @@ export function Composition() {
             const k = (w.z * zScale) / r;
             w.x += w.x * k;
             w.y += w.y * k;
+          }
+        }
+
+        // 3b. Shape influence — radially squish each vertex toward the
+        // silhouette outline. factor blends 1 (circle) → shapeR(θ)/radius.
+        if (polar) {
+          for (const w of warped) {
+            const theta = Math.atan2(w.y, w.x);
+            const shapeR = polarRadiusAt(polar, theta);
+            const factor = 1 + (shapeR * invRadius - 1) * influence;
+            w.x *= factor;
+            w.y *= factor;
           }
         }
 
@@ -1020,6 +1055,7 @@ export function Composition() {
     p.inkRippleDepth,
     p.inkRippleDecay,
     p.inkRippleZScale,
+    p.inkShapeInfluence,
     p.inkSeed,
     p.customPath,
     boundary,
