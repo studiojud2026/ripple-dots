@@ -342,6 +342,17 @@ export function Composition() {
     shared.addBinding(params, 'radius', { min: 40, max: 600, step: 1 });
     shared.addBinding(params, 'rotation', { min: -180, max: 180, step: 1 });
     shared.addBinding(params, 'background');
+    // Quick theme presets — Light = white bg + multiply (ink reads as real
+    // pigment); Dark = black bg + screen (ink glows light on black). Refresh
+    // so the background/blend bindings reflect the change in the panel.
+    const setTheme = (bg: string, blend: 'multiply' | 'screen') => {
+      params.background = bg;
+      params.inkBlend = blend;
+      pane.refresh();
+      force();
+    };
+    shared.addButton({ title: 'Light Mode' }).on('click', () => setTheme('#ffffff', 'multiply'));
+    shared.addButton({ title: 'Dark Mode' }).on('click', () => setTheme('#000000', 'screen'));
 
     // ──────────── DOT MODE ────────────
     const dotBlades: { hidden: boolean }[] = [];
