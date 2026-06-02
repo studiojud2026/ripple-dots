@@ -265,27 +265,37 @@ export function Composition() {
     reader.readAsDataURL(file);
   };
 
-  // Export the current composition as a PNG at `scale`× the on-screen size by
-  // replaying the render closure onto an offscreen canvas. The canvas is
-  // square at the same logical size as the live view, so scale 2 / 4 just
-  // multiplies the pixel resolution.
-  const exportPng = (scale: number) => {
+  // Export the current composition as a PNG at an ABSOLUTE pixel resolution by
+  // replaying the render closure onto an offscreen canvas. Using an absolute
+  // target (rather than a multiple of the window) keeps it predictable and
+  // independent of devicePixelRatio — on a retina screen the on-screen canvas
+  // is already 2× the CSS size, which made the old "4×" only ~2× the visible
+  // pixels. The artwork is drawn in the same logical `size` coordinate space
+  // as the live view (so framing is identical); `scale` just multiplies the
+  // pixel density.
+  const exportPng = (targetPx: number) => {
     const draw = drawSceneRef.current;
     if (!draw) return;
     const size = Math.min(window.innerWidth, window.innerHeight);
+    const scale = targetPx / size;
     const off = document.createElement('canvas');
-    off.width = Math.round(size * scale);
-    off.height = Math.round(size * scale);
+    off.width = targetPx;
+    off.height = targetPx;
     const ctx = off.getContext('2d');
     if (!ctx) return;
     ctx.setTransform(scale, 0, 0, scale, 0, 0);
     draw(ctx, size);
     off.toBlob((blob) => {
-      if (!blob) return;
+      if (!blob) {
+        // Browsers cap canvas area (Safari especially). Fall back gracefully.
+        // eslint-disable-next-line no-alert
+        alert(`Export failed at ${targetPx}px — try a smaller size (your browser caps canvas area).`);
+        return;
+      }
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
-      a.download = `ripple-${off.width}x${off.height}.png`;
+      a.download = `ripple-${targetPx}px.png`;
       a.click();
       URL.revokeObjectURL(url);
     }, 'image/png');
@@ -560,10 +570,12 @@ export function Composition() {
     inkRip.addBinding(params, 'inkRippleSpeed', { label: 'Speed', min: 0, max: 5, step: 0.01 });
 
     // ──────────── EXPORT (shared) ────────────
+    // Absolute output resolutions — dpr-independent, so what you pick is what
+    // you get regardless of screen or window size.
     const exp = pane.addFolder({ title: 'Export', expanded: false });
-    exp.addButton({ title: 'PNG (1×)' }).on('click', () => exportPng(1));
-    exp.addButton({ title: 'PNG (2×)' }).on('click', () => exportPng(2));
-    exp.addButton({ title: 'PNG (4×)' }).on('click', () => exportPng(4));
+    exp.addButton({ title: 'PNG 2048px' }).on('click', () => exportPng(2048));
+    exp.addButton({ title: 'PNG 4096px' }).on('click', () => exportPng(4096));
+    exp.addButton({ title: 'PNG 8192px' }).on('click', () => exportPng(8192));
 
     dotBladesRef.current = dotBlades;
     inkBladesRef.current = inkBlades;
