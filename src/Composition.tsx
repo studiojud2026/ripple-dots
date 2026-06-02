@@ -24,6 +24,41 @@ function imagePixel(x: number, y: number, img: ImageBuffer, radius: number): num
   return (py * img.w + px) * 4;
 }
 
+// HSL helpers — used by ink mode to derive per-loop color variants from a
+// single ink base color (hue ± shift, lightness ± shift).
+function rgbToHsl({ r, g, b }: RGB): { h: number; s: number; l: number } {
+  const rf = r / 255;
+  const gf = g / 255;
+  const bf = b / 255;
+  const max = Math.max(rf, gf, bf);
+  const min = Math.min(rf, gf, bf);
+  const l = (max + min) / 2;
+  let h = 0;
+  let s = 0;
+  if (max !== min) {
+    const d = max - min;
+    s = l > 0.5 ? d / (2 - max - min) : d / (max + min);
+    switch (max) {
+      case rf:
+        h = ((gf - bf) / d + (gf < bf ? 6 : 0)) * 60;
+        break;
+      case gf:
+        h = ((bf - rf) / d + 2) * 60;
+        break;
+      case bf:
+        h = ((rf - gf) / d + 4) * 60;
+        break;
+    }
+  }
+  return { h, s: s * 100, l: l * 100 };
+}
+function hslString(h: number, s: number, l: number, a: number): string {
+  const hh = ((h % 360) + 360) % 360;
+  const ss = Math.max(0, Math.min(100, s));
+  const ll = Math.max(0, Math.min(100, l));
+  return `hsla(${hh.toFixed(1)}, ${ss.toFixed(1)}%, ${ll.toFixed(1)}%, ${a})`;
+}
+
 function hexToRgb(hex: string): RGB {
   const h = hex.replace('#', '');
   const v = h.length === 3 ? h.split('').map((c) => c + c).join('') : h;
@@ -54,6 +89,10 @@ function mulberry32(seed: number) {
 }
 
 const DEFAULTS = {
+  // Top-level rendering pipeline. 'dots' runs the existing dot system;
+  // 'ink' bypasses dots and renders overlapping shape-clipped loop strokes
+  // that get multiply-blended into a watercolor / ink-in-water look.
+  renderMode: 'dots' as 'dots' | 'ink',
   generator: 'phyllotaxis' as GeneratorKind,
   // composition
   shape: 'heart' as ShapeKind,
@@ -92,6 +131,20 @@ const DEFAULTS = {
   extraFreqJitter: 0.6, // ± multiplier on primary frequency
   extraSpread: 0.7, // fraction of radius the sources can wander to
   extraSeed: 1,
+  // Ink mode
+  inkCount: 60,
+  inkColor: '#d946a0',
+  inkSizeMin: 60,
+  inkSizeMax: 220,
+  inkAspectVariance: 0.5,
+  inkAlpha: 0.07,
+  inkLineWidth: 1.4,
+  inkHueShift: 30, // ± degrees of hue jitter per loop
+  inkLightnessShift: 18, // ± percent lightness jitter per loop
+  inkBlur: 0, // canvas filter blur in px
+  inkBlend: 'multiply' as 'multiply' | 'screen' | 'source-over' | 'lighter',
+  inkVertices: 96, // points sampled per loop (affects ripple warp smoothness)
+  inkSeed: 7,
 };
 
 export function Composition() {
@@ -164,6 +217,11 @@ export function Composition() {
       title: 'Ripple Dots',
     }) as any;
     const params = paramsRef.current;
+
+    pane.addBinding(params, 'renderMode', {
+      label: 'Render Mode',
+      options: { Dots: 'dots', Ink: 'ink' },
+    });
 
     pane.addBinding(params, 'generator', {
       options: {
@@ -249,6 +307,44 @@ export function Composition() {
         pane.refresh();
         force();
       });
+
+    const ink = pane.addFolder({ title: 'Ink', expanded: false });
+    ink.addBinding(params, 'inkCount', { label: 'Count', min: 1, max: 200, step: 1 });
+    ink.addBinding(params, 'inkColor', { label: 'Ink Color' });
+    ink.addBinding(params, 'inkSizeMin', { label: 'Size Min', min: 10, max: 400, step: 1 });
+    ink.addBinding(params, 'inkSizeMax', { label: 'Size Max', min: 10, max: 600, step: 1 });
+    ink.addBinding(params, 'inkAspectVariance', {
+      label: 'Aspect Variance',
+      min: 0,
+      max: 0.9,
+      step: 0.01,
+    });
+    ink.addBinding(params, 'inkAlpha', { label: 'Stroke Alpha', min: 0.01, max: 0.5, step: 0.01 });
+    ink.addBinding(params, 'inkLineWidth', { label: 'Line Width', min: 0.2, max: 8, step: 0.1 });
+    ink.addBinding(params, 'inkHueShift', { label: 'Hue Jitter', min: 0, max: 180, step: 1 });
+    ink.addBinding(params, 'inkLightnessShift', {
+      label: 'Lightness Jitter',
+      min: 0,
+      max: 50,
+      step: 1,
+    });
+    ink.addBinding(params, 'inkBlur', { label: 'Blur', min: 0, max: 8, step: 0.1 });
+    ink.addBinding(params, 'inkBlend', {
+      label: 'Blend',
+      options: {
+        Multiply: 'multiply',
+        Screen: 'screen',
+        Normal: 'source-over',
+        Lighter: 'lighter',
+      },
+    });
+    ink.addBinding(params, 'inkVertices', { label: 'Vertices', min: 12, max: 256, step: 1 });
+    ink.addBinding(params, 'inkSeed', { label: 'Seed', min: 0, max: 9999, step: 1 });
+    ink.addButton({ title: 'Shuffle Ink' }).on('click', () => {
+      params.inkSeed = Math.floor(Math.random() * 9999);
+      pane.refresh();
+      force();
+    });
 
     pane
       .addButton({ title: 'Shuffle Generator' })
@@ -373,6 +469,57 @@ export function Composition() {
     ],
   );
 
+  // Loops: each loop is an ellipse with center, semi-axes, rotation, and a
+  // per-loop color shift (hue / lightness) derived deterministically from the
+  // seed. Sampled into per-loop vertex Dot[] at render time so ripple/animate
+  // distort the contour.
+  type Loop = {
+    cx: number;
+    cy: number;
+    a: number;
+    b: number;
+    rotation: number;
+    dh: number;
+    dl: number;
+  };
+  const loops = useMemo<Loop[]>(() => {
+    if (p.renderMode !== 'ink') return [];
+    const rand = mulberry32(p.inkSeed);
+    const arr: Loop[] = [];
+    const sizeMin = Math.min(p.inkSizeMin, p.inkSizeMax);
+    const sizeMax = Math.max(p.inkSizeMin, p.inkSizeMax);
+    // Loop centers are placed inside the shape's bounding circle scaled by 0.7
+    // so most loops mostly stay inside the silhouette (the clip mask catches
+    // the rest). Uniform area distribution via sqrt-of-uniform radius.
+    const placement = p.radius * 0.7;
+    for (let i = 0; i < p.inkCount; i++) {
+      const ang = rand() * Math.PI * 2;
+      const rr = Math.sqrt(rand()) * placement;
+      const cx = Math.cos(ang) * rr;
+      const cy = Math.sin(ang) * rr;
+      const size = sizeMin + rand() * (sizeMax - sizeMin);
+      // aspect varies above and below 1 (taller vs wider)
+      const aspect = 1 + (rand() - 0.5) * 2 * p.inkAspectVariance;
+      const a = size * (aspect >= 1 ? 1 : aspect);
+      const b = size * (aspect >= 1 ? 1 / aspect : 1);
+      const rotation = rand() * Math.PI * 2;
+      const dh = (rand() - 0.5) * 2 * p.inkHueShift;
+      const dl = (rand() - 0.5) * 2 * p.inkLightnessShift;
+      arr.push({ cx, cy, a, b, rotation, dh, dl });
+    }
+    return arr;
+  }, [
+    p.renderMode,
+    p.inkCount,
+    p.inkSeed,
+    p.inkSizeMin,
+    p.inkSizeMax,
+    p.inkAspectVariance,
+    p.inkHueShift,
+    p.inkLightnessShift,
+    p.radius,
+  ]);
+
   // Render
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -391,6 +538,94 @@ export function Composition() {
     ctx.fillStyle = p.background;
     ctx.fillRect(0, 0, size, size);
 
+    // ============================================================
+    // INK MODE — overlapping shape-clipped loop strokes
+    // ============================================================
+    if (p.renderMode === 'ink') {
+      ctx.save();
+      ctx.translate(size / 2, size / 2);
+
+      // Yaw rotates the whole composition in-plane; tilt is intentionally
+      // ignored in ink mode (it's a 2D effect).
+      const yaw = (p.rotation * Math.PI) / 180;
+      if (yaw !== 0) ctx.rotate(yaw);
+
+      // Clip to the active shape silhouette so loops fade out at the edges.
+      const clipPath = buildShape(shapeKind, p.radius, p.customPath);
+      ctx.clip(clipPath);
+
+      // Base color in HSL so each loop can vary cheaply.
+      const baseHsl = rgbToHsl(hexToRgb(p.inkColor));
+      ctx.globalCompositeOperation = p.inkBlend;
+      ctx.lineWidth = p.inkLineWidth;
+      ctx.lineCap = 'round';
+      ctx.lineJoin = 'round';
+      if (p.inkBlur > 0) ctx.filter = `blur(${p.inkBlur}px)`;
+
+      const nVerts = p.inkVertices;
+      const cosR = Math.cos(yaw); // not used to undo; ctx.rotate already applied
+      // (keep noop refs so the ts unused-var lint doesn't complain in builds)
+      void cosR;
+
+      // For each loop: sample vertices around the parametric ellipse,
+      // funnel through applyRipple (uses the same global ripple settings as
+      // dot mode), then stroke as a closed Path2D.
+      for (const L of loops) {
+        // Build vertex array
+        const verts = new Array(nVerts);
+        const cr = Math.cos(L.rotation);
+        const sr = Math.sin(L.rotation);
+        for (let i = 0; i < nVerts; i++) {
+          const t = (i / nVerts) * Math.PI * 2;
+          const lx = Math.cos(t) * L.a;
+          const ly = Math.sin(t) * L.b;
+          // Rotate around loop center, then translate to world position
+          verts[i] = {
+            x: L.cx + lx * cr - ly * sr,
+            y: L.cy + lx * sr + ly * cr,
+            r: 0,
+          };
+        }
+
+        // Warp by the same global ripple pipeline that dots use. We only
+        // consume the XY of the result; Z is unused in 2D ink mode.
+        const warped = applyRipple(verts, {
+          kind: p.rippleKind,
+          frequency: p.rippleFrequency,
+          depth: p.rippleDepth,
+          decay: p.rippleDecay,
+          phase,
+          boundary,
+          extraSources,
+        });
+
+        // Per-loop color: shift hue and lightness from base
+        ctx.strokeStyle = hslString(
+          baseHsl.h + L.dh,
+          baseHsl.s,
+          baseHsl.l + L.dl,
+          p.inkAlpha,
+        );
+
+        ctx.beginPath();
+        for (let i = 0; i < nVerts; i++) {
+          const w = warped[i];
+          if (i === 0) ctx.moveTo(w.x, w.y);
+          else ctx.lineTo(w.x, w.y);
+        }
+        ctx.closePath();
+        ctx.stroke();
+      }
+
+      ctx.filter = 'none';
+      ctx.globalCompositeOperation = 'source-over';
+      ctx.restore();
+      return;
+    }
+
+    // ============================================================
+    // DOT MODE
+    // ============================================================
     ctx.save();
     ctx.translate(size / 2, size / 2);
 
@@ -549,6 +784,24 @@ export function Composition() {
     p.lineAngle,
     imageBuf,
     p.radius,
+    // Ink mode deps
+    p.renderMode,
+    loops,
+    p.inkColor,
+    p.inkAlpha,
+    p.inkLineWidth,
+    p.inkBlur,
+    p.inkBlend,
+    p.inkVertices,
+    p.customPath,
+    boundary,
+    extraSources,
+    p.rippleKind,
+    p.rippleFrequency,
+    p.rippleDepth,
+    p.rippleDecay,
+    phase,
+    shapeKind,
   ]);
 
   const needsImage = shapeKind === 'image' || p.mode === 'image';
