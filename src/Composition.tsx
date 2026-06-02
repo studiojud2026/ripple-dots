@@ -172,6 +172,11 @@ const DEFAULTS = {
   // in the reference); 1 spreads centers all the way out.
   inkPathScale: 0.35,
   inkRadiusShrink: 0.65,
+  // Ink camera. rotation (shared Canvas folder) spins the artwork in-plane;
+  // tilt pitches it back into the screen; perspective is the focal length.
+  // Ripple wave-height (Z) becomes real relief once tilted.
+  inkTilt: 0,
+  inkPerspective: 900,
   // How strongly the Canvas → Shape silhouette DEFORMS the ink field.
   // 0 = ignore shape (pure circular field); 1 = fully squish the ink into the
   // silhouette outline. This warps geometry rather than masking, so strokes
@@ -466,6 +471,18 @@ export function Composition() {
       step: 0.01,
     });
 
+    // ──── Camera sub-folder ────
+    // 3D camera for ink. Rotation (in the shared Canvas folder) spins the
+    // artwork in-plane; Tilt pitches it back; Perspective sets focal length.
+    const cam = ink.addFolder({ title: 'Camera', expanded: false });
+    cam.addBinding(params, 'inkTilt', { label: 'Tilt', min: -89, max: 89, step: 1 });
+    cam.addBinding(params, 'inkPerspective', {
+      label: 'Perspective',
+      min: 200,
+      max: 4000,
+      step: 10,
+    });
+
     // Ink-only ripple settings — nested inside the Ink folder so the panel
     // visually reads as a single self-contained section, NOT shared with the
     // dot Ripple/Extra Ripples folders above.
@@ -736,10 +753,20 @@ export function Composition() {
       ctx.save();
       ctx.translate(size / 2, size / 2);
 
-      // Yaw rotates the whole composition in-plane; tilt is intentionally
-      // ignored in ink mode (it's a 2D effect).
-      const yaw = (p.rotation * Math.PI) / 180;
-      if (yaw !== 0) ctx.rotate(yaw);
+      // 3D camera. Rotation spins the artwork in-plane (around the viewing
+      // axis); tilt pitches it back around the horizontal axis; perspective
+      // foreshortens. Applied per-vertex below so ripple wave-height (Z)
+      // shows as real relief once tilted.
+      const spin = (p.rotation * Math.PI) / 180;
+      const cosS = Math.cos(spin);
+      const sinS = Math.sin(spin);
+      const pitch = (p.inkTilt * Math.PI) / 180;
+      const cosP = Math.cos(pitch);
+      const sinP = Math.sin(pitch);
+      const focal = p.inkPerspective;
+      // Skip the projection math entirely when the camera is a no-op (no spin,
+      // no tilt) and no relief — keeps the common flat case cheap.
+      const cameraActive = spin !== 0 || pitch !== 0;
 
       // Shape DEFORMS the ink field instead of masking it. Build a polar
       // radius table from the silhouette; each point's distance-from-origin is
@@ -826,6 +853,21 @@ export function Composition() {
             const factor = 1 + (shapeR * invRadius - 1) * influence;
             w.x *= factor;
             w.y *= factor;
+          }
+        }
+
+        // 3c. Camera — in-plane spin, pitch (tilt), then perspective divide.
+        // Mutates x/y in place to projected screen coords; z is consumed here.
+        // Multiply/screen blends are commutative so no depth sort is needed.
+        if (cameraActive) {
+          for (const w of warped) {
+            const sx = w.x * cosS - w.y * sinS;
+            const sy = w.x * sinS + w.y * cosS;
+            const py3 = sy * cosP - w.z * sinP;
+            const pz3 = sy * sinP + w.z * cosP;
+            const scale = focal / Math.max(1, focal + pz3);
+            w.x = sx * scale;
+            w.y = py3 * scale;
           }
         }
 
@@ -1056,6 +1098,8 @@ export function Composition() {
     p.inkRippleDecay,
     p.inkRippleZScale,
     p.inkShapeInfluence,
+    p.inkTilt,
+    p.inkPerspective,
     p.inkSeed,
     p.customPath,
     boundary,
