@@ -386,7 +386,7 @@ export function Composition() {
 
     const ink = pane.addFolder({ title: 'Ink' });
     inkBlades.push(ink);
-    ink.addBinding(params, 'inkCount', { label: 'Count', min: 1, max: 800, step: 1 });
+    ink.addBinding(params, 'inkCount', { label: 'Count', min: 1, max: 2500, step: 1 });
     ink.addBinding(params, 'inkColor', { label: 'Ink Color' });
     ink.addBinding(params, 'inkSizeMin', { label: 'Size Min', min: 0, max: 600, step: 1 });
     ink.addBinding(params, 'inkSizeMax', { label: 'Size Max', min: 10, max: 800, step: 1 });
