@@ -177,6 +177,11 @@ const DEFAULTS = {
   // Ripple wave-height (Z) becomes real relief once tilted.
   inkTilt: 0,
   inkPerspective: 900,
+  // Depth. Spread offsets each loop along Z by its path progress so the
+  // composition becomes a 3D stack/vortex instead of a flat disc. Fade is
+  // atmospheric fog — loops farther from the camera lose alpha and recede.
+  inkDepthSpread: 0,
+  inkDepthFade: 0.4,
   // How strongly the Canvas → Shape silhouette DEFORMS the ink field.
   // 0 = ignore shape (pure circular field); 1 = fully squish the ink into the
   // silhouette outline. This warps geometry rather than masking, so strokes
@@ -482,6 +487,13 @@ export function Composition() {
       max: 4000,
       step: 10,
     });
+    cam.addBinding(params, 'inkDepthSpread', {
+      label: 'Depth Spread',
+      min: 0,
+      max: 1.5,
+      step: 0.01,
+    });
+    cam.addBinding(params, 'inkDepthFade', { label: 'Depth Fade', min: 0, max: 1, step: 0.01 });
 
     // Ink-only ripple settings — nested inside the Ink folder so the panel
     // visually reads as a single self-contained section, NOT shared with the
@@ -660,6 +672,7 @@ export function Composition() {
   type Loop = {
     cx: number;
     cy: number;
+    cz: number; // center depth — offsets the loop along Z for 3D stacking
     a: number;
     b: number;
     rotation: number;
@@ -703,7 +716,10 @@ export function Composition() {
       const rotation = p.inkAspectVariance === 0 ? 0 : aspectRand() * Math.PI * 2;
       const dh = (colorRand() - 0.5) * 2 * p.inkHueShift;
       const dl = (colorRand() - 0.5) * 2 * p.inkLightnessShift;
-      arr.push({ cx: c.x, cy: c.y, a, b, rotation, dh, dl });
+      // Stack along Z by path progress, centered so the composition straddles
+      // z = 0. Combined with radius taper this makes a 3D winding vortex.
+      const cz = (t - 0.5) * p.inkDepthSpread * p.radius;
+      arr.push({ cx: c.x, cy: c.y, cz, a, b, rotation, dh, dl });
     }
     return arr;
   }, [
@@ -716,6 +732,7 @@ export function Composition() {
     p.inkAspectVariance,
     p.inkHueShift,
     p.inkLightnessShift,
+    p.inkDepthSpread,
     p.inkPath,
     p.inkPathA,
     p.inkPathB,
@@ -764,9 +781,30 @@ export function Composition() {
       const cosP = Math.cos(pitch);
       const sinP = Math.sin(pitch);
       const focal = p.inkPerspective;
-      // Skip the projection math entirely when the camera is a no-op (no spin,
-      // no tilt) and no relief — keeps the common flat case cheap.
-      const cameraActive = spin !== 0 || pitch !== 0;
+      const depthSpread = p.inkDepthSpread;
+      const depthFade = p.inkDepthFade;
+      // Project whenever spin / tilt / depth is in play. Flat default stays a
+      // no-op (and cheap) when all three are zero.
+      const cameraActive = spin !== 0 || pitch !== 0 || depthSpread > 0;
+
+      // Fog pre-pass: project each loop's center to a camera-space depth, then
+      // find the range so we can fade far loops. Cheap (≤800 centers). We use
+      // the loop center (pre-ripple/warp) as a stable per-loop depth proxy.
+      const loopDepth = new Float64Array(loops.length);
+      let minDepth = Infinity;
+      let maxDepth = -Infinity;
+      if (depthFade > 0 && cameraActive) {
+        for (let li = 0; li < loops.length; li++) {
+          const L = loops[li];
+          const sy = L.cx * sinS + L.cy * cosS;
+          const d = sy * sinP + L.cz * cosP;
+          loopDepth[li] = d;
+          if (d < minDepth) minDepth = d;
+          if (d > maxDepth) maxDepth = d;
+        }
+      }
+      const depthRange = maxDepth - minDepth || 1;
+      const fogActive = depthFade > 0 && cameraActive;
 
       // Shape DEFORMS the ink field instead of masking it. Build a polar
       // radius table from the silhouette; each point's distance-from-origin is
@@ -804,7 +842,8 @@ export function Composition() {
         unitSin[i] = Math.sin(t);
       }
 
-      for (const L of loops) {
+      for (let li = 0; li < loops.length; li++) {
+        const L = loops[li];
         // 1. Build the loop's vertex polygon (closed ellipse) in shape space.
         const verts = new Array(nVerts);
         const cr = Math.cos(L.rotation);
@@ -860,15 +899,26 @@ export function Composition() {
         // Mutates x/y in place to projected screen coords; z is consumed here.
         // Multiply/screen blends are commutative so no depth sort is needed.
         if (cameraActive) {
+          // Each vertex's total depth = ripple wave-height (w.z) + the loop's
+          // structural stacking offset (L.cz).
           for (const w of warped) {
+            const vz = w.z + L.cz;
             const sx = w.x * cosS - w.y * sinS;
             const sy = w.x * sinS + w.y * cosS;
-            const py3 = sy * cosP - w.z * sinP;
-            const pz3 = sy * sinP + w.z * cosP;
+            const py3 = sy * cosP - vz * sinP;
+            const pz3 = sy * sinP + vz * cosP;
             const scale = focal / Math.max(1, focal + pz3);
             w.x = sx * scale;
             w.y = py3 * scale;
           }
+        }
+
+        // 3d. Atmospheric depth fog — far loops fade toward the background.
+        // 0 = nearest, 1 = farthest; multiplies into stroke alpha.
+        let fog = 1;
+        if (fogActive) {
+          const t = (loopDepth[li] - minDepth) / depthRange;
+          fog = 1 - depthFade * t;
         }
 
         // 4. Per-loop line width with deterministic ± variance
@@ -883,7 +933,7 @@ export function Composition() {
             baseHsl.h + L.dh,
             baseHsl.s,
             baseHsl.l + L.dl,
-            p.inkGlowAlpha,
+            p.inkGlowAlpha * fog,
           );
           ctx.beginPath();
           for (let i = 0; i < nVerts; i++) {
@@ -901,7 +951,7 @@ export function Composition() {
           baseHsl.h + L.dh,
           baseHsl.s,
           baseHsl.l + L.dl,
-          p.inkAlpha,
+          p.inkAlpha * fog,
         );
         ctx.beginPath();
         for (let i = 0; i < nVerts; i++) {
@@ -1100,6 +1150,8 @@ export function Composition() {
     p.inkShapeInfluence,
     p.inkTilt,
     p.inkPerspective,
+    p.inkDepthSpread,
+    p.inkDepthFade,
     p.inkSeed,
     p.customPath,
     boundary,
