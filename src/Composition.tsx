@@ -210,6 +210,11 @@ export function Composition() {
   // setter on every blade.
   const dotBladesRef = useRef<{ hidden: boolean }[]>([]);
   const inkBladesRef = useRef<{ hidden: boolean }[]>([]);
+  // The render effect stores its drawing closure here so PNG export can replay
+  // it onto an offscreen canvas at a higher resolution.
+  const drawSceneRef = useRef<((ctx: CanvasRenderingContext2D, size: number) => void) | null>(
+    null,
+  );
   const [, force] = useReducer((n: number) => n + 1, 0);
   const [seed, setSeed] = useState(1);
   const [phase, setPhase] = useState(0);
@@ -258,6 +263,32 @@ export function Composition() {
       if (typeof reader.result === 'string') setImageSrc(reader.result);
     };
     reader.readAsDataURL(file);
+  };
+
+  // Export the current composition as a PNG at `scale`× the on-screen size by
+  // replaying the render closure onto an offscreen canvas. The canvas is
+  // square at the same logical size as the live view, so scale 2 / 4 just
+  // multiplies the pixel resolution.
+  const exportPng = (scale: number) => {
+    const draw = drawSceneRef.current;
+    if (!draw) return;
+    const size = Math.min(window.innerWidth, window.innerHeight);
+    const off = document.createElement('canvas');
+    off.width = Math.round(size * scale);
+    off.height = Math.round(size * scale);
+    const ctx = off.getContext('2d');
+    if (!ctx) return;
+    ctx.setTransform(scale, 0, 0, scale, 0, 0);
+    draw(ctx, size);
+    off.toBlob((blob) => {
+      if (!blob) return;
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `ripple-${off.width}x${off.height}.png`;
+      a.click();
+      URL.revokeObjectURL(url);
+    }, 'image/png');
   };
 
   // Mount Tweakpane once. All controls bind to paramsRef.current (mutable),
@@ -528,6 +559,12 @@ export function Composition() {
     inkRip.addBinding(params, 'inkRippleAnimate', { label: 'Animate' });
     inkRip.addBinding(params, 'inkRippleSpeed', { label: 'Speed', min: 0, max: 5, step: 0.01 });
 
+    // ──────────── EXPORT (shared) ────────────
+    const exp = pane.addFolder({ title: 'Export', expanded: false });
+    exp.addButton({ title: 'PNG (1×)' }).on('click', () => exportPng(1));
+    exp.addButton({ title: 'PNG (2×)' }).on('click', () => exportPng(2));
+    exp.addButton({ title: 'PNG (4×)' }).on('click', () => exportPng(4));
+
     dotBladesRef.current = dotBlades;
     inkBladesRef.current = inkBlades;
     // Initial visibility — set BEFORE wiring change listener so the first
@@ -760,6 +797,13 @@ export function Composition() {
     canvas.style.height = `${size}px`;
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
 
+    // All drawing lives in paint() so PNG export can replay it onto an
+    // offscreen canvas. ctx/size are params (shadow the outer canvas refs);
+    // the function is hoisted, so the call + ref assignment above it work.
+    drawSceneRef.current = paint;
+    paint(ctx, size);
+
+    function paint(ctx: CanvasRenderingContext2D, size: number) {
     ctx.fillStyle = p.background;
     ctx.fillRect(0, 0, size, size);
 
@@ -1111,6 +1155,7 @@ export function Composition() {
       }
     }
     ctx.restore();
+    }
   }, [
     rippled,
     p.color,
