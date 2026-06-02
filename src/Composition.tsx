@@ -131,20 +131,34 @@ const DEFAULTS = {
   extraFreqJitter: 0.6, // ± multiplier on primary frequency
   extraSpread: 0.7, // fraction of radius the sources can wander to
   extraSeed: 1,
-  // Ink mode
-  inkCount: 60,
+  // Ink mode — appearance
+  inkCount: 80,
   inkColor: '#d946a0',
-  inkSizeMin: 60,
-  inkSizeMax: 220,
-  inkAspectVariance: 0.5,
-  inkAlpha: 0.07,
-  inkLineWidth: 1.4,
+  inkSizeMin: 80,
+  inkSizeMax: 240,
+  inkAspectVariance: 0.55,
+  inkAlpha: 0.08,
+  inkLineWidth: 5, // base stroke width; per-loop variance jitters it
+  inkLineWidthVariance: 0.6, // ± fraction of lineWidth
   inkHueShift: 30, // ± degrees of hue jitter per loop
   inkLightnessShift: 18, // ± percent lightness jitter per loop
-  inkBlur: 0, // canvas filter blur in px
+  inkBlur: 2, // canvas filter blur in px — main source of the soft ink falloff
+  inkGlowWidth: 0, // extra wide low-alpha pass behind each line; 0 disables
+  inkGlowAlpha: 0.04,
   inkBlend: 'multiply' as 'multiply' | 'screen' | 'source-over' | 'lighter',
-  inkVertices: 96, // points sampled per loop (affects ripple warp smoothness)
+  inkVertices: 80,
   inkSeed: 7,
+  // Ink mode — its OWN ripple controls, completely independent from dot ripples
+  inkRippleKind: 'twist' as RippleKind,
+  inkRippleFrequency: 0.6,
+  inkRippleDepth: 30,
+  inkRippleDecay: 0,
+  inkRippleAnimate: false,
+  inkRippleSpeed: 0.6,
+  // Height-based ripple modes (radial / horizontal / edge-wave) output Z;
+  // ink mode is 2D so we convert that Z to outward radial XY push, scaled
+  // by this factor, so those modes still produce visible loop expansion.
+  inkRippleZScale: 0.4,
 };
 
 export function Composition() {
@@ -152,6 +166,11 @@ export function Composition() {
   const paneContainerRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const paramsRef = useRef({ ...DEFAULTS });
+  // Refs to the per-mode bindings/folders so a separate effect can toggle
+  // their visibility when Render Mode changes. Tweakpane exposes a `.hidden`
+  // setter on every blade.
+  const dotBladesRef = useRef<{ hidden: boolean }[]>([]);
+  const inkBladesRef = useRef<{ hidden: boolean }[]>([]);
   const [, force] = useReducer((n: number) => n + 1, 0);
   const [seed, setSeed] = useState(1);
   const [phase, setPhase] = useState(0);
@@ -223,19 +242,11 @@ export function Composition() {
       options: { Dots: 'dots', Ink: 'ink' },
     });
 
-    pane.addBinding(params, 'generator', {
-      options: {
-        Radial: 'radial',
-        Concentric: 'concentric',
-        Spiral: 'spiral',
-        Phyllotaxis: 'phyllotaxis',
-        Grid: 'grid',
-        Dither: 'dither',
-      },
-    });
-
-    const comp = pane.addFolder({ title: 'Composition' });
-    comp.addBinding(params, 'shape', {
+    // ──────────── SHARED ────────────
+    // Shape + Background are shared by both modes (the silhouette and the
+    // canvas background colour matter regardless of what's being drawn).
+    const shared = pane.addFolder({ title: 'Canvas' });
+    shared.addBinding(params, 'shape', {
       options: {
         Circle: 'circle',
         Heart: 'heart',
@@ -247,15 +258,35 @@ export function Composition() {
         Image: 'image',
       },
     });
-    comp.addBinding(params, 'customPath', { label: 'Custom Path' });
-    comp.addBinding(params, 'radius', { min: 40, max: 600, step: 1 });
+    shared.addBinding(params, 'customPath', { label: 'Custom Path' });
+    shared.addBinding(params, 'radius', { min: 40, max: 600, step: 1 });
+    shared.addBinding(params, 'rotation', { min: -180, max: 180, step: 1 });
+    shared.addBinding(params, 'background');
+
+    // ──────────── DOT MODE ────────────
+    const dotBlades: { hidden: boolean }[] = [];
+
+    const generator = pane.addBinding(params, 'generator', {
+      options: {
+        Radial: 'radial',
+        Concentric: 'concentric',
+        Spiral: 'spiral',
+        Phyllotaxis: 'phyllotaxis',
+        Grid: 'grid',
+        Dither: 'dither',
+      },
+    });
+    dotBlades.push(generator);
+
+    const comp = pane.addFolder({ title: 'Composition' });
+    dotBlades.push(comp);
     comp.addBinding(params, 'spacing', { min: 2, max: 60, step: 1 });
     comp.addBinding(params, 'density', { min: 1, max: 12, step: 1 });
-    comp.addBinding(params, 'rotation', { min: -180, max: 180, step: 1 });
     comp.addBinding(params, 'tilt', { min: -89, max: 89, step: 1 });
     comp.addBinding(params, 'perspective', { min: 200, max: 4000, step: 10 });
 
     const dot = pane.addFolder({ title: 'Dot' });
+    dotBlades.push(dot);
     dot.addBinding(params, 'dotShape', {
       label: 'Shape',
       options: { Round: 'round', Square: 'square', Line: 'line' },
@@ -270,12 +301,12 @@ export function Composition() {
     dot.addBinding(params, 'troughColor', { label: 'Trough Color' });
     dot.addBinding(params, 'crestColor', { label: 'Crest Color' });
     dot.addBinding(params, 'midColor', { label: 'Mid Color' });
-    dot.addBinding(params, 'background');
     dot.addBinding(params, 'opacity', { min: 0, max: 1, step: 0.01 });
     dot.addBinding(params, 'depthFade', { label: 'Depth Fade', min: 0, max: 1, step: 0.01 });
     dot.addBinding(params, 'crestGlow', { label: 'Crest Glow', min: 0, max: 1, step: 0.01 });
 
     const rip = pane.addFolder({ title: 'Ripple' });
+    dotBlades.push(rip);
     rip.addBinding(params, 'rippleKind', {
       label: 'Kind',
       options: {
@@ -295,20 +326,27 @@ export function Composition() {
     rip.addBinding(params, 'rippleSpeed', { label: 'Speed', min: 0, max: 5, step: 0.01 });
 
     const extra = pane.addFolder({ title: 'Extra Ripples', expanded: false });
+    dotBlades.push(extra);
     extra.addBinding(params, 'extraCount', { label: 'Count', min: 0, max: 12, step: 1 });
     extra.addBinding(params, 'extraDepth', { label: 'Depth Mix', min: 0, max: 2, step: 0.01 });
     extra.addBinding(params, 'extraFreqJitter', { label: 'Frequency Jitter', min: 0, max: 1, step: 0.01 });
     extra.addBinding(params, 'extraSpread', { label: 'Spread', min: 0.1, max: 1, step: 0.01 });
     extra.addBinding(params, 'extraSeed', { label: 'Seed', min: 0, max: 9999, step: 1 });
-    extra
-      .addButton({ title: 'Shuffle Sources' })
-      .on('click', () => {
-        params.extraSeed = Math.floor(Math.random() * 9999);
-        pane.refresh();
-        force();
-      });
+    extra.addButton({ title: 'Shuffle Sources' }).on('click', () => {
+      params.extraSeed = Math.floor(Math.random() * 9999);
+      pane.refresh();
+      force();
+    });
 
-    const ink = pane.addFolder({ title: 'Ink', expanded: false });
+    const shuffleGen = pane.addButton({ title: 'Shuffle Generator' });
+    shuffleGen.on('click', () => setSeed((s) => s + 1));
+    dotBlades.push(shuffleGen);
+
+    // ──────────── INK MODE ────────────
+    const inkBlades: { hidden: boolean }[] = [];
+
+    const ink = pane.addFolder({ title: 'Ink' });
+    inkBlades.push(ink);
     ink.addBinding(params, 'inkCount', { label: 'Count', min: 1, max: 200, step: 1 });
     ink.addBinding(params, 'inkColor', { label: 'Ink Color' });
     ink.addBinding(params, 'inkSizeMin', { label: 'Size Min', min: 10, max: 400, step: 1 });
@@ -319,8 +357,17 @@ export function Composition() {
       max: 0.9,
       step: 0.01,
     });
-    ink.addBinding(params, 'inkAlpha', { label: 'Stroke Alpha', min: 0.01, max: 0.5, step: 0.01 });
-    ink.addBinding(params, 'inkLineWidth', { label: 'Line Width', min: 0.2, max: 8, step: 0.1 });
+    ink.addBinding(params, 'inkAlpha', { label: 'Stroke Alpha', min: 0.005, max: 0.5, step: 0.005 });
+    ink.addBinding(params, 'inkLineWidth', { label: 'Line Width', min: 0.5, max: 30, step: 0.1 });
+    ink.addBinding(params, 'inkLineWidthVariance', {
+      label: 'Width Variance',
+      min: 0,
+      max: 1,
+      step: 0.01,
+    });
+    ink.addBinding(params, 'inkGlowWidth', { label: 'Glow Width', min: 0, max: 60, step: 0.5 });
+    ink.addBinding(params, 'inkGlowAlpha', { label: 'Glow Alpha', min: 0, max: 0.3, step: 0.005 });
+    ink.addBinding(params, 'inkBlur', { label: 'Blur', min: 0, max: 12, step: 0.1 });
     ink.addBinding(params, 'inkHueShift', { label: 'Hue Jitter', min: 0, max: 180, step: 1 });
     ink.addBinding(params, 'inkLightnessShift', {
       label: 'Lightness Jitter',
@@ -328,7 +375,6 @@ export function Composition() {
       max: 50,
       step: 1,
     });
-    ink.addBinding(params, 'inkBlur', { label: 'Blur', min: 0, max: 8, step: 0.1 });
     ink.addBinding(params, 'inkBlend', {
       label: 'Blend',
       options: {
@@ -346,9 +392,46 @@ export function Composition() {
       force();
     });
 
-    pane
-      .addButton({ title: 'Shuffle Generator' })
-      .on('click', () => setSeed((s) => s + 1));
+    // Ink-only ripple settings — nested inside the Ink folder so the panel
+    // visually reads as a single self-contained section, NOT shared with the
+    // dot Ripple/Extra Ripples folders above.
+    const inkRip = ink.addFolder({ title: 'Ripple', expanded: false });
+    inkRip.addBinding(params, 'inkRippleKind', {
+      label: 'Kind',
+      options: {
+        Off: 'off',
+        Radial: 'radial',
+        'Concentric Pulse': 'concentric-pulse',
+        Horizontal: 'horizontal',
+        Twist: 'twist',
+        'Edge Wave (shape)': 'edge-wave',
+        'Edge Pulse (shape)': 'edge-pulse',
+      },
+    });
+    inkRip.addBinding(params, 'inkRippleFrequency', {
+      label: 'Frequency',
+      min: 0.05,
+      max: 10,
+      step: 0.05,
+    });
+    inkRip.addBinding(params, 'inkRippleDepth', { label: 'Depth', min: 0, max: 200, step: 1 });
+    inkRip.addBinding(params, 'inkRippleDecay', { label: 'Decay', min: 0, max: 100, step: 1 });
+    inkRip.addBinding(params, 'inkRippleZScale', {
+      label: 'Z → Push',
+      min: 0,
+      max: 2,
+      step: 0.01,
+    });
+    inkRip.addBinding(params, 'inkRippleAnimate', { label: 'Animate' });
+    inkRip.addBinding(params, 'inkRippleSpeed', { label: 'Speed', min: 0, max: 5, step: 0.01 });
+
+    dotBladesRef.current = dotBlades;
+    inkBladesRef.current = inkBlades;
+    // Initial visibility — set BEFORE wiring change listener so the first
+    // render sees the right state.
+    const inDots = params.renderMode === 'dots';
+    dotBlades.forEach((b) => (b.hidden = !inDots));
+    inkBlades.forEach((b) => (b.hidden = inDots));
 
     pane.on('change', () => force());
     return () => {
@@ -358,20 +441,30 @@ export function Composition() {
 
   const p = paramsRef.current;
 
-  // Phase animation
+  // Toggle panel visibility when Render Mode flips. Runs after the mount
+  // effect has populated the refs.
   useEffect(() => {
-    if (!p.rippleAnimate) return;
+    const inDots = p.renderMode === 'dots';
+    dotBladesRef.current.forEach((b) => (b.hidden = !inDots));
+    inkBladesRef.current.forEach((b) => (b.hidden = inDots));
+  }, [p.renderMode]);
+
+  // Phase animation — drives whichever mode's animate toggle is on.
+  const animate = p.renderMode === 'ink' ? p.inkRippleAnimate : p.rippleAnimate;
+  const speed = p.renderMode === 'ink' ? p.inkRippleSpeed : p.rippleSpeed;
+  useEffect(() => {
+    if (!animate) return;
     let raf = 0;
     let last = performance.now();
     const tick = (t: number) => {
       const dt = (t - last) / 1000;
       last = t;
-      setPhase((ph) => ph + dt * p.rippleSpeed * 2);
+      setPhase((ph) => ph + dt * speed * 2);
       raf = requestAnimationFrame(tick);
     };
     raf = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(raf);
-  }, [p.rippleAnimate, p.rippleSpeed]);
+  }, [animate, speed]);
 
   const shapeKind = p.shape;
 
@@ -554,24 +647,22 @@ export function Composition() {
       const clipPath = buildShape(shapeKind, p.radius, p.customPath);
       ctx.clip(clipPath);
 
-      // Base color in HSL so each loop can vary cheaply.
       const baseHsl = rgbToHsl(hexToRgb(p.inkColor));
       ctx.globalCompositeOperation = p.inkBlend;
-      ctx.lineWidth = p.inkLineWidth;
       ctx.lineCap = 'round';
       ctx.lineJoin = 'round';
       if (p.inkBlur > 0) ctx.filter = `blur(${p.inkBlur}px)`;
 
       const nVerts = p.inkVertices;
-      const cosR = Math.cos(yaw); // not used to undo; ctx.rotate already applied
-      // (keep noop refs so the ts unused-var lint doesn't complain in builds)
-      void cosR;
+      const lwBase = p.inkLineWidth;
+      const lwVar = p.inkLineWidthVariance;
+      const zScale = p.inkRippleZScale;
+      // Per-loop line-width variance is deterministic by re-seeding from the
+      // same ink seed (so it stays stable across renders).
+      const widthRand = mulberry32(p.inkSeed ^ 0xa5);
 
-      // For each loop: sample vertices around the parametric ellipse,
-      // funnel through applyRipple (uses the same global ripple settings as
-      // dot mode), then stroke as a closed Path2D.
       for (const L of loops) {
-        // Build vertex array
+        // 1. Build the loop's vertex polygon (closed ellipse) in shape space.
         const verts = new Array(nVerts);
         const cr = Math.cos(L.rotation);
         const sr = Math.sin(L.rotation);
@@ -579,7 +670,6 @@ export function Composition() {
           const t = (i / nVerts) * Math.PI * 2;
           const lx = Math.cos(t) * L.a;
           const ly = Math.sin(t) * L.b;
-          // Rotate around loop center, then translate to world position
           verts[i] = {
             x: L.cx + lx * cr - ly * sr,
             y: L.cy + lx * sr + ly * cr,
@@ -587,26 +677,63 @@ export function Composition() {
           };
         }
 
-        // Warp by the same global ripple pipeline that dots use. We only
-        // consume the XY of the result; Z is unused in 2D ink mode.
+        // 2. Warp with the INK-OWN ripple settings (not the dot Ripple).
         const warped = applyRipple(verts, {
-          kind: p.rippleKind,
-          frequency: p.rippleFrequency,
-          depth: p.rippleDepth,
-          decay: p.rippleDecay,
+          kind: p.inkRippleKind,
+          frequency: p.inkRippleFrequency,
+          depth: p.inkRippleDepth,
+          decay: p.inkRippleDecay,
           phase,
           boundary,
-          extraSources,
         });
 
-        // Per-loop color: shift hue and lightness from base
+        // 3. Ink is 2D, so any Z output from height-based modes (radial /
+        // horizontal / edge-wave) would be invisible. Translate it into an
+        // outward radial push from the world origin — wave crests now bulge
+        // the loops out, troughs pull them in.
+        if (zScale !== 0) {
+          for (const w of warped) {
+            if (w.z === 0) continue;
+            const r = Math.hypot(w.x, w.y);
+            if (r === 0) continue;
+            const k = (w.z * zScale) / r;
+            w.x += w.x * k;
+            w.y += w.y * k;
+          }
+        }
+
+        // 4. Per-loop line width with deterministic ± variance
+        const wJitter = (widthRand() - 0.5) * 2 * lwVar;
+        const loopWidth = Math.max(0.3, lwBase * (1 + wJitter));
+
+        // 5. Glow halo pass (optional, very wide low-alpha stroke under the
+        // main line — adds the "inner shadow" depth where loops overlap).
+        if (p.inkGlowWidth > 0) {
+          ctx.lineWidth = loopWidth + p.inkGlowWidth;
+          ctx.strokeStyle = hslString(
+            baseHsl.h + L.dh,
+            baseHsl.s,
+            baseHsl.l + L.dl,
+            p.inkGlowAlpha,
+          );
+          ctx.beginPath();
+          for (let i = 0; i < nVerts; i++) {
+            const w = warped[i];
+            if (i === 0) ctx.moveTo(w.x, w.y);
+            else ctx.lineTo(w.x, w.y);
+          }
+          ctx.closePath();
+          ctx.stroke();
+        }
+
+        // 6. Main line pass.
+        ctx.lineWidth = loopWidth;
         ctx.strokeStyle = hslString(
           baseHsl.h + L.dh,
           baseHsl.s,
           baseHsl.l + L.dl,
           p.inkAlpha,
         );
-
         ctx.beginPath();
         for (let i = 0; i < nVerts; i++) {
           const w = warped[i];
@@ -790,9 +917,18 @@ export function Composition() {
     p.inkColor,
     p.inkAlpha,
     p.inkLineWidth,
+    p.inkLineWidthVariance,
+    p.inkGlowWidth,
+    p.inkGlowAlpha,
     p.inkBlur,
     p.inkBlend,
     p.inkVertices,
+    p.inkRippleKind,
+    p.inkRippleFrequency,
+    p.inkRippleDepth,
+    p.inkRippleDecay,
+    p.inkRippleZScale,
+    p.inkSeed,
     p.customPath,
     boundary,
     extraSources,
