@@ -220,8 +220,13 @@ const DEFAULTS = {
   // symmetrically to every side. Rides mostly in Z so tilt shows the relief.
   // 0 amp = off.
   inkRibbonRippleAmp: 30,
-  inkRibbonRippleFreq: 6, // ring count from centre to canvas edge
+  inkRibbonRippleFreq: 6, // ring count from the drop point outward
   inkRibbonRippleFalloff: 1.1, // how fast the droplet energy fades outward (0 = none)
+  // Where the droplet rings emanate from. 'canvas' = concentric circles in the
+  // flat canvas (screen-centred). 'ribbon' = rings spread across the ribbon's
+  // own surface — along its length + across its width — so they follow the
+  // band's undulating, twisting path through 3D space.
+  inkRibbonRippleSource: 'ribbon' as 'canvas' | 'ribbon',
   // How strongly the Canvas → Shape silhouette DEFORMS the ink field.
   // 0 = ignore shape (pure circular field); 1 = fully squish the ink into the
   // silhouette outline. This warps geometry rather than masking, so strokes
@@ -684,6 +689,10 @@ export function Composition() {
       min: 0,
       max: 4,
       step: 0.05,
+    });
+    rib.addBinding(params, 'inkRibbonRippleSource', {
+      label: 'Droplet From',
+      options: { 'Ribbon Surface': 'ribbon', Canvas: 'canvas' },
     });
     rib.addBinding(params, 'inkRibbonAnimate', { label: 'Animate (L→R)' });
     rib.addBinding(params, 'inkRibbonSpeed', { label: 'Speed', min: 0, max: 5, step: 0.01 });
@@ -1192,6 +1201,7 @@ export function Composition() {
         const ripAmp = p.inkRibbonRippleAmp;
         const ripFalloff = p.inkRibbonRippleFalloff;
         const ripMaxR = p.radius * 1.4;
+        const pathMode = p.inkRibbonRippleSource === 'ribbon';
         const vSpread = p.radius * p.inkRibbonSpread;
         const fade = p.inkDepthFade;
 
@@ -1215,26 +1225,51 @@ export function Composition() {
           const phaseOff = rand() * Math.PI * 2;
           const dh = (rand() - 0.5) * 2 * p.inkHueShift;
           const dl = (rand() - 0.5) * 2 * p.inkLightnessShift;
-          for (let s = 0; s < strands; s++) {
-            const v = strands === 1 ? 0 : (s / (strands - 1)) * 2 - 1; // -1..1 across width
+
+          // Per-ribbon precompute: the centerline (x, cy) shared by all strands,
+          // and — for ribbon-surface mode — the arc length ALONG that centerline
+          // relative to the ribbon's midpoint (the drop point). The ripple then
+          // spreads across the ribbon surface (along-length + across-width) so
+          // its rings follow the band's undulating, twisting path through space.
+          const xArr = new Float64Array(nSamp);
+          const cyArr = new Float64Array(nSamp);
+          for (let i = 0; i < nSamp; i++) {
+            const x = x0 + (i / (nSamp - 1)) * span;
+            xArr[i] = x;
+            cyArr[i] = baseY + amp * Math.sin(x * waveK - phase + phaseOff);
+          }
+          let sRel: Float64Array | null = null;
+          if (pathMode && ripAmp !== 0) {
+            const s = new Float64Array(nSamp);
+            for (let i = 1; i < nSamp; i++) {
+              const dx = xArr[i] - xArr[i - 1];
+              const dcy = cyArr[i] - cyArr[i - 1];
+              s[i] = s[i - 1] + Math.sqrt(dx * dx + dcy * dcy);
+            }
+            const sMid = s[midIdx];
+            for (let i = 0; i < nSamp; i++) s[i] -= sMid;
+            sRel = s;
+          }
+
+          for (let st = 0; st < strands; st++) {
+            const v = strands === 1 ? 0 : (st / (strands - 1)) * 2 - 1; // -1..1 across width
             const pts = new Array(nSamp);
             let mid = 0;
             for (let i = 0; i < nSamp; i++) {
-              const fx = i / (nSamp - 1);
-              const x = x0 + fx * span;
-              // Travelling wave: sin(kx - ωt) moves crests to +x (left→right).
-              const cy = baseY + amp * Math.sin(x * waveK - phase + phaseOff);
+              const x = xArr[i];
+              const cy = cyArr[i];
               const tw = x * twistK - phase * 0.6 + phaseOff;
               let yy = cy + v * halfW * Math.cos(tw);
               let zz = v * halfW * Math.sin(tw);
-              // Droplet ripple: concentric waves keyed on distance from the
-              // canvas centre, expanding outward with phase and fading by
-              // ripFalloff — symmetric to every side, like a dropped pebble.
+              // Droplet ripple — expands from the drop point, fading by falloff.
               if (ripAmp !== 0) {
-                const dist = Math.sqrt(x * x + yy * yy);
-                const att =
-                  ripFalloff > 0 ? Math.pow(Math.max(0, 1 - dist / ripMaxR), ripFalloff) : 1;
-                const rip = ripAmp * Math.sin(dist * ripK - phase) * att;
+                // ribbon-surface: distance over the strip (along-length sRel,
+                // across-width v·halfW). canvas: flat distance from screen centre.
+                const d = pathMode
+                  ? Math.sqrt(sRel![i] * sRel![i] + v * halfW * (v * halfW))
+                  : Math.sqrt(x * x + yy * yy);
+                const att = ripFalloff > 0 ? Math.pow(Math.max(0, 1 - d / ripMaxR), ripFalloff) : 1;
+                const rip = ripAmp * Math.sin(d * ripK - phase) * att;
                 yy += rip * 0.3;
                 zz += rip;
               }
@@ -1620,6 +1655,7 @@ export function Composition() {
     p.inkRibbonRippleAmp,
     p.inkRibbonRippleFreq,
     p.inkRibbonRippleFalloff,
+    p.inkRibbonRippleSource,
     waterSources,
     p.inkWaterRings,
     p.inkWaterSpacing,
