@@ -227,6 +227,11 @@ const DEFAULTS = {
   // own surface — along its length + across its width — so they follow the
   // band's undulating, twisting path through 3D space.
   inkRibbonRippleSource: 'ribbon' as 'canvas' | 'ribbon',
+  // Additional droplets — extra drop points whose rings superpose/interfere
+  // with the first. Drop 0 stays at the centre (count 1 = single droplet);
+  // extras are seeded. Spread = how far the extras scatter from centre.
+  inkRibbonDropCount: 1,
+  inkRibbonDropSpread: 0.6,
   // How strongly the Canvas → Shape silhouette DEFORMS the ink field.
   // 0 = ignore shape (pure circular field); 1 = fully squish the ink into the
   // silhouette outline. This warps geometry rather than masking, so strokes
@@ -693,6 +698,13 @@ export function Composition() {
     rib.addBinding(params, 'inkRibbonRippleSource', {
       label: 'Droplet From',
       options: { 'Ribbon Surface': 'ribbon', Canvas: 'canvas' },
+    });
+    rib.addBinding(params, 'inkRibbonDropCount', { label: 'Droplets', min: 1, max: 8, step: 1 });
+    rib.addBinding(params, 'inkRibbonDropSpread', {
+      label: 'Drop Spread',
+      min: 0,
+      max: 1,
+      step: 0.01,
     });
     rib.addBinding(params, 'inkRibbonAnimate', { label: 'Animate (L→R)' });
     rib.addBinding(params, 'inkRibbonSpeed', { label: 'Speed', min: 0, max: 5, step: 0.01 });
@@ -1205,6 +1217,22 @@ export function Composition() {
         const vSpread = p.radius * p.inkRibbonSpread;
         const fade = p.inkDepthFade;
 
+        // Drop points whose rings superpose. Drop 0 is always centred so
+        // Droplets=1 reproduces the single droplet; extras are seeded. `u` is
+        // the normalised along-length position (ribbon mode); cx/cy are canvas
+        // positions; ph is a per-drop phase offset for organic interference.
+        const dropSpread = p.inkRibbonDropSpread;
+        const dropRand = mulberry32(p.inkSeed ^ 0x1d);
+        const drops = [{ u: 0, cx: 0, cy: 0, ph: 0 }];
+        for (let j = 1; j < p.inkRibbonDropCount; j++) {
+          drops.push({
+            u: dropRand() * 2 - 1,
+            cx: (dropRand() * 2 - 1) * p.radius * dropSpread,
+            cy: (dropRand() * 2 - 1) * p.radius * dropSpread,
+            ph: dropRand() * Math.PI * 2,
+          });
+        }
+
         const project = (x: number, y: number, z: number) => {
           const sx = x * cosS - y * sinS;
           const sy = x * sinS + y * cosS;
@@ -1239,6 +1267,7 @@ export function Composition() {
             cyArr[i] = baseY + amp * Math.sin(x * waveK - phase + phaseOff);
           }
           let sRel: Float64Array | null = null;
+          let Lhalf = 0;
           if (pathMode && ripAmp !== 0) {
             const s = new Float64Array(nSamp);
             for (let i = 1; i < nSamp; i++) {
@@ -1249,6 +1278,7 @@ export function Composition() {
             const sMid = s[midIdx];
             for (let i = 0; i < nSamp; i++) s[i] -= sMid;
             sRel = s;
+            Lhalf = (s[nSamp - 1] - s[0]) / 2;
           }
 
           for (let st = 0; st < strands; st++) {
@@ -1261,15 +1291,27 @@ export function Composition() {
               const tw = x * twistK - phase * 0.6 + phaseOff;
               let yy = cy + v * halfW * Math.cos(tw);
               let zz = v * halfW * Math.sin(tw);
-              // Droplet ripple — expands from the drop point, fading by falloff.
+              // Droplet ripple — sum the expanding/fading wave from every drop
+              // so multiple droplets interfere. ribbon-surface measures over the
+              // strip (along-length sRel, across-width v·halfW); canvas measures
+              // flat distance in screen space.
               if (ripAmp !== 0) {
-                // ribbon-surface: distance over the strip (along-length sRel,
-                // across-width v·halfW). canvas: flat distance from screen centre.
-                const d = pathMode
-                  ? Math.sqrt(sRel![i] * sRel![i] + v * halfW * (v * halfW))
-                  : Math.sqrt(x * x + yy * yy);
-                const att = ripFalloff > 0 ? Math.pow(Math.max(0, 1 - d / ripMaxR), ripFalloff) : 1;
-                const rip = ripAmp * Math.sin(d * ripK - phase) * att;
+                const w = v * halfW;
+                let rip = 0;
+                for (const dp of drops) {
+                  let d;
+                  if (pathMode) {
+                    const ds = sRel![i] - dp.u * Lhalf * dropSpread;
+                    d = Math.sqrt(ds * ds + w * w);
+                  } else {
+                    const dx = x - dp.cx;
+                    const dy = yy - dp.cy;
+                    d = Math.sqrt(dx * dx + dy * dy);
+                  }
+                  const att =
+                    ripFalloff > 0 ? Math.pow(Math.max(0, 1 - d / ripMaxR), ripFalloff) : 1;
+                  rip += ripAmp * Math.sin(d * ripK - phase + dp.ph) * att;
+                }
                 yy += rip * 0.3;
                 zz += rip;
               }
@@ -1656,6 +1698,8 @@ export function Composition() {
     p.inkRibbonRippleFreq,
     p.inkRibbonRippleFalloff,
     p.inkRibbonRippleSource,
+    p.inkRibbonDropCount,
+    p.inkRibbonDropSpread,
     waterSources,
     p.inkWaterRings,
     p.inkWaterSpacing,
