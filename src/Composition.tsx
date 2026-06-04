@@ -539,7 +539,7 @@ export function Composition() {
     // ──── Appearance (shared by all ink styles) ────
     const appear = ink.addFolder({ title: 'Appearance' });
     appear.addBinding(params, 'inkColor', { label: 'Ink Color' });
-    appear.addBinding(params, 'inkAlpha', { label: 'Stroke Alpha', min: 0.005, max: 0.5, step: 0.005 });
+    appear.addBinding(params, 'inkAlpha', { label: 'Stroke Alpha', min: 0.005, max: 1, step: 0.005 });
     appear.addBinding(params, 'inkLineWidth', { label: 'Line Width', min: 0.5, max: 30, step: 0.1 });
     appear.addBinding(params, 'inkLineWidthVariance', {
       label: 'Width Variance',
