@@ -217,10 +217,12 @@ const DEFAULTS = {
   inkPlaneBend: 10, // in-plane displacement (makes rings visible facing camera)
   inkPlaneFalloff: 1, // droplet energy fade outward
   // Spiral winds the wavefronts around each drop (0 = concentric rings; ± =
-  // arms spiralling in/out). Caustic brightens thin crest ridges on the dark
-  // ground — the focused-light banding from the reference.
+  // arms spiralling in/out). Wobble domain-warps the surface so the bands
+  // undulate and flow organically instead of being perfect arcs — the
+  // warping look from the reference. Scale = wobble frequency.
   inkPlaneSpiral: 0,
-  inkPlaneCaustic: 0,
+  inkPlaneWobble: 0,
+  inkPlaneWobbleScale: 2,
   inkPlaneAnimate: false,
   inkPlaneSpeed: 0.6,
   // Ribbon style. Each ribbon is a horizontal band rendered as `strands`
@@ -704,7 +706,13 @@ export function Composition() {
     plane.addBinding(params, 'inkPlaneBend', { label: 'Surface Bend', min: 0, max: 40, step: 0.5 });
     plane.addBinding(params, 'inkPlaneFalloff', { label: 'Falloff', min: 0, max: 4, step: 0.05 });
     plane.addBinding(params, 'inkPlaneSpiral', { label: 'Spiral', min: -6, max: 6, step: 0.05 });
-    plane.addBinding(params, 'inkPlaneCaustic', { label: 'Caustic', min: 0, max: 1, step: 0.01 });
+    plane.addBinding(params, 'inkPlaneWobble', { label: 'Wobble', min: 0, max: 200, step: 1 });
+    plane.addBinding(params, 'inkPlaneWobbleScale', {
+      label: 'Wobble Scale',
+      min: 0.2,
+      max: 8,
+      step: 0.05,
+    });
     plane.addBinding(params, 'inkPlaneAnimate', { label: 'Animate (expand)' });
     plane.addBinding(params, 'inkPlaneSpeed', { label: 'Speed', min: 0, max: 5, step: 0.01 });
 
@@ -1157,8 +1165,8 @@ export function Composition() {
         const fade = p.inkDepthFade;
         const cull = Math.max(1, p.inkCull);
         const spiral = p.inkPlaneSpiral;
-        const causticAmt = p.inkPlaneCaustic;
-        const causticSharp = 1 + causticAmt * 5; // higher caustic = thinner, brighter ridges
+        const wobble = p.inkPlaneWobble;
+        const wobbleLobes = p.inkPlaneWobbleScale; // angular lobes of the band wobble
 
         // Drop points on the plane — drop 0 centred, extras seeded.
         const dr = mulberry32(p.inkSeed ^ 0x2f);
@@ -1177,37 +1185,37 @@ export function Composition() {
           let z = 0;
           let bx = 0;
           let by = 0;
-          let wsum = 0; // accumulated wave for caustic shading
           for (const d of drops) {
             const dx = x - d.x;
             const dy = y - d.y;
-            const dist = Math.sqrt(dx * dx + dy * dy);
+            const theta = Math.atan2(dy, dx);
+            let dist = Math.sqrt(dx * dx + dy * dy);
+            // Wobble: perturb the ring RADIUS as a smooth function of angle (and
+            // a little of radius) so the bands undulate in and out organically
+            // while the spiral/grid stay readable. Animates with phase.
+            if (wobble > 0) {
+              dist +=
+                wobble *
+                (Math.sin(theta * wobbleLobes + dist * 0.012 - phase) +
+                  0.5 * Math.sin(theta * wobbleLobes * 1.9 - dist * 0.017 + phase * 1.2));
+            }
             const att = falloff > 0 ? Math.pow(Math.max(0, 1 - dist / maxR), falloff) : 1;
             if (att <= 0) continue;
             // Spiral: add an angular term so wavefronts wind around the drop.
-            const ang = spiral !== 0 ? spiral * Math.atan2(dy, dx) : 0;
+            const ang = spiral !== 0 ? spiral * theta : 0;
             const wave = Math.sin(dist * ringK + ang - phase + d.ph);
             z += amp * wave * att;
-            wsum += wave * att;
             if (bend > 0 && dist > 0.001) {
               const b = (bend * wave * att) / dist;
               bx += dx * b;
               by += dy * b;
             }
           }
-          const pr = project(x + bx, y + by, z);
-          // Caustic light: crests focus to thin bright ridges (pow sharpening).
-          const wn = Math.max(0, Math.min(1, wsum / drops.length * 0.5 + 0.5));
-          return { x: pr.x, y: pr.y, depth: pr.depth, light: Math.pow(wn, causticSharp) };
+          return project(x + bx, y + by, z);
         };
 
         const lineRand = mulberry32(p.inkSeed ^ 0x7c);
-        type GLine = {
-          pts: { x: number; y: number; light: number }[];
-          depth: number;
-          dh: number;
-          dl: number;
-        };
+        type GLine = { pts: { x: number; y: number }[]; depth: number; dh: number; dl: number };
         const built: GLine[] = [];
         let minD = Infinity;
         let maxD = -Infinity;
@@ -1238,42 +1246,16 @@ export function Composition() {
 
         const dRange = maxD - minD || 1;
         ctx.lineWidth = p.inkLineWidth;
-        const QBANDS = 14; // caustic light quantisation (fewer stroke runs)
         for (const b of built) {
           const fog = fade > 0 ? 1 - fade * ((b.depth - minD) / dRange) : 1;
-          if (causticAmt <= 0) {
-            // Flat colour — one stroke per line.
-            ctx.strokeStyle = hslString(baseHsl.h + b.dh, baseHsl.s, baseHsl.l + b.dl, p.inkAlpha * fog);
-            ctx.beginPath();
-            for (let i = 0; i < b.pts.length; i++) {
-              const pt = b.pts[i];
-              if (i === 0) ctx.moveTo(pt.x, pt.y);
-              else ctx.lineTo(pt.x, pt.y);
-            }
-            ctx.stroke();
-            continue;
+          ctx.strokeStyle = hslString(baseHsl.h + b.dh, baseHsl.s, baseHsl.l + b.dl, p.inkAlpha * fog);
+          ctx.beginPath();
+          for (let i = 0; i < b.pts.length; i++) {
+            const pt = b.pts[i];
+            if (i === 0) ctx.moveTo(pt.x, pt.y);
+            else ctx.lineTo(pt.x, pt.y);
           }
-          // Caustic — brighten thin crest ridges. Stroke the line in runs of
-          // equal quantised light so the colour follows the wave along the line
-          // without a stroke call per segment.
-          let i = 0;
-          while (i < b.pts.length - 1) {
-            const band = Math.round(b.pts[i].light * QBANDS);
-            let j = i + 1;
-            while (j < b.pts.length && Math.round(b.pts[j].light * QBANDS) === band) j++;
-            const lift = causticAmt * b.pts[i].light * 62; // lightness boost at crests
-            ctx.strokeStyle = hslString(
-              baseHsl.h + b.dh,
-              baseHsl.s,
-              baseHsl.l + b.dl + lift,
-              p.inkAlpha * fog,
-            );
-            ctx.beginPath();
-            ctx.moveTo(b.pts[i].x, b.pts[i].y);
-            for (let k = i + 1; k <= j && k < b.pts.length; k++) ctx.lineTo(b.pts[k].x, b.pts[k].y);
-            ctx.stroke();
-            i = j;
-          }
+          ctx.stroke();
         }
 
         ctx.filter = 'none';
@@ -1915,7 +1897,8 @@ export function Composition() {
     p.inkPlaneBend,
     p.inkPlaneFalloff,
     p.inkPlaneSpiral,
-    p.inkPlaneCaustic,
+    p.inkPlaneWobble,
+    p.inkPlaneWobbleScale,
     waterSources,
     p.inkWaterRings,
     p.inkWaterSpacing,
