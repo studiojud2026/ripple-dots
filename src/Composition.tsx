@@ -110,6 +110,9 @@ const DEFAULTS = {
   rotation: 0,
   tilt: 0,
   perspective: 900,
+  // Camera zoom — uniform scale of the rendered composition around the canvas
+  // centre (shared by both modes). 1 = no zoom.
+  zoom: 1,
   // dot
   dotShape: 'round' as 'round' | 'square' | 'line',
   dotSize: 2.3,
@@ -464,6 +467,7 @@ export function Composition() {
     comp.addBinding(params, 'rotation', { label: 'Rotation', min: -180, max: 180, step: 1 });
     comp.addBinding(params, 'tilt', { min: -89, max: 89, step: 1 });
     comp.addBinding(params, 'perspective', { min: 200, max: 4000, step: 10 });
+    comp.addBinding(params, 'zoom', { label: 'Zoom', min: 0.1, max: 5, step: 0.01 });
 
     const dot = pane.addFolder({ title: 'Dots' });
     dotBlades.push(dot);
@@ -710,6 +714,7 @@ export function Composition() {
     cam.addBinding(params, 'rotation', { label: 'Rotation', min: -180, max: 180, step: 1 });
     cam.addBinding(params, 'inkTilt', { label: 'Tilt', min: -89, max: 89, step: 1 });
     cam.addBinding(params, 'inkPerspective', { label: 'Perspective', min: 200, max: 4000, step: 10 });
+    cam.addBinding(params, 'zoom', { label: 'Zoom', min: 0.1, max: 5, step: 0.01 });
     cam.addBinding(params, 'inkDepthSpread', { label: 'Depth Spread', min: 0, max: 1.5, step: 0.01 });
     cam.addBinding(params, 'inkDepthFade', { label: 'Depth Fade', min: 0, max: 1, step: 0.01 });
 
@@ -1062,6 +1067,7 @@ export function Composition() {
     if (p.renderMode === 'ink') {
       ctx.save();
       ctx.translate(w / 2, h / 2);
+      if (p.zoom !== 1) ctx.scale(p.zoom, p.zoom);
 
       // 3D camera. Rotation spins the artwork in-plane (around the viewing
       // axis); tilt pitches it back around the horizontal axis; perspective
@@ -1695,6 +1701,7 @@ export function Composition() {
     // ============================================================
     ctx.save();
     ctx.translate(w / 2, h / 2);
+    if (p.zoom !== 1) ctx.scale(p.zoom, p.zoom);
 
     const yaw = (p.rotation * Math.PI) / 180;
     const pitch = (p.tilt * Math.PI) / 180;
@@ -1925,6 +1932,7 @@ export function Composition() {
     phase,
     shapeKind,
     resizeTick,
+    p.zoom,
   ]);
 
   const needsImage = shapeKind === 'image' || p.mode === 'image';
