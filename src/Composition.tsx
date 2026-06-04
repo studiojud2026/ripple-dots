@@ -258,6 +258,12 @@ const DEFAULTS = {
   // extras are seeded. Spread = how far the extras scatter from centre.
   inkRibbonDropCount: 1,
   inkRibbonDropSpread: 0.6,
+  // Spiral winds each droplet's rings around its centre; Wobble domain-warps
+  // the ring radius by angle so the bands undulate organically (ported from
+  // the Plane style). Scale = wobble lobes.
+  inkRibbonRippleSpiral: 0,
+  inkRibbonRippleWobble: 0,
+  inkRibbonRippleWobbleScale: 2,
   // How strongly the Canvas → Shape silhouette DEFORMS the ink field.
   // 0 = ignore shape (pure circular field); 1 = fully squish the ink into the
   // silhouette outline. This warps geometry rather than masking, so strokes
@@ -636,7 +642,7 @@ export function Composition() {
     rib.addBinding(params, 'inkRibbonAmplitude', { label: 'Amplitude', min: 0, max: 400, step: 1 });
     rib.addBinding(params, 'inkRibbonWaveFreq', { label: 'Wave Freq', min: 0, max: 8, step: 0.05 });
     rib.addBinding(params, 'inkRibbonTwist', { label: 'Twist', min: 0, max: 10, step: 0.05 });
-    rib.addBinding(params, 'inkRibbonSpan', { label: 'Span', min: 0.5, max: 2, step: 0.01 });
+    rib.addBinding(params, 'inkRibbonSpan', { label: 'Span', min: 0.5, max: 6, step: 0.01 });
     rib.addBinding(params, 'inkRibbonLength', { label: 'Length', min: 0.05, max: 1, step: 0.01 });
     rib.addBinding(params, 'inkRibbonSpread', { label: 'Spread', min: 0, max: 1, step: 0.01 });
     const ribDrop = rib.addFolder({ title: 'Droplet' });
@@ -649,6 +655,14 @@ export function Composition() {
     });
     ribDrop.addBinding(params, 'inkRibbonDropCount', { label: 'Droplets', min: 1, max: 8, step: 1 });
     ribDrop.addBinding(params, 'inkRibbonDropSpread', { label: 'Drop Spread', min: 0, max: 1, step: 0.01 });
+    ribDrop.addBinding(params, 'inkRibbonRippleSpiral', { label: 'Spiral', min: -6, max: 6, step: 0.05 });
+    ribDrop.addBinding(params, 'inkRibbonRippleWobble', { label: 'Wobble', min: 0, max: 200, step: 1 });
+    ribDrop.addBinding(params, 'inkRibbonRippleWobbleScale', {
+      label: 'Wobble Scale',
+      min: 0.2,
+      max: 8,
+      step: 0.05,
+    });
     rib.addBinding(params, 'inkRibbonAnimate', { label: 'Animate (L→R)' });
     rib.addBinding(params, 'inkRibbonSpeed', { label: 'Speed', min: 0, max: 5, step: 0.01 });
 
@@ -1365,6 +1379,9 @@ export function Composition() {
         const ripAmp = p.inkRibbonRippleAmp;
         const ripFalloff = p.inkRibbonRippleFalloff;
         const ripMaxR = p.radius * 1.4;
+        const ripSpiral = p.inkRibbonRippleSpiral;
+        const ripWobble = p.inkRibbonRippleWobble;
+        const ripWobbleLobes = p.inkRibbonRippleWobbleScale;
         const pathMode = p.inkRibbonRippleSource === 'ribbon';
         const vSpread = p.radius * p.inkRibbonSpread;
         const fade = p.inkDepthFade;
@@ -1455,17 +1472,32 @@ export function Composition() {
                 let rip = 0;
                 for (const dp of drops) {
                   let d;
+                  let ang;
                   if (pathMode) {
                     const ds = sRel![i] - dp.u * Lhalf * dropSpread;
                     d = Math.sqrt(ds * ds + w * w);
+                    ang = Math.atan2(w, ds);
                   } else {
                     const dx = x - dp.cx;
                     const dy = yy - dp.cy;
                     d = Math.sqrt(dx * dx + dy * dy);
+                    ang = Math.atan2(dy, dx);
+                  }
+                  // Wobble: warp the ring radius by angle (organic undulation).
+                  if (ripWobble > 0) {
+                    d +=
+                      ripWobble *
+                      (Math.sin(ang * ripWobbleLobes + d * 0.012 - phase) +
+                        0.5 * Math.sin(ang * ripWobbleLobes * 1.9 - d * 0.017 + phase * 1.2));
+                    if (d < 0) d = 0;
                   }
                   const att =
-                    ripFalloff > 0 ? Math.pow(Math.max(0, 1 - d / ripMaxR), ripFalloff) : 1;
-                  rip += ripAmp * Math.sin(d * ripK - phase + dp.ph) * att;
+                    ripFalloff > 0
+                      ? Math.pow(Math.max(0, Math.min(1, 1 - d / ripMaxR)), ripFalloff)
+                      : 1;
+                  // Spiral: wind the wavefronts around the drop.
+                  const spin = ripSpiral !== 0 ? ripSpiral * ang : 0;
+                  rip += ripAmp * Math.sin(d * ripK + spin - phase + dp.ph) * att;
                 }
                 yy += rip * 0.3;
                 zz += rip;
@@ -1852,6 +1884,9 @@ export function Composition() {
     p.inkRibbonTwist,
     p.inkRibbonSpan,
     p.inkRibbonLength,
+    p.inkRibbonRippleSpiral,
+    p.inkRibbonRippleWobble,
+    p.inkRibbonRippleWobbleScale,
     p.inkRibbonSpread,
     p.inkRibbonRippleAmp,
     p.inkRibbonRippleFreq,
