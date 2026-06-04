@@ -146,6 +146,13 @@ const DEFAULTS = {
   // low alpha for clean overlap stacking on light backgrounds.
   inkCount: 90,
   inkColor: '#c83a8d',
+  // Color mode: 'solid' uses Ink Color (+ jitter); 'gradient' colours each
+  // element by its depth across 2–3 stops (near → far).
+  inkColorMode: 'solid' as 'solid' | 'gradient',
+  inkGradStops: 3,
+  inkGradColor1: '#ff42dc',
+  inkGradColor2: '#7d3cff',
+  inkGradColor3: '#3d6aff',
   // Cull — keep only every Nth stroke (1 = all). Thins the dense cloud down
   // to a representative few REAL strokes: loops for Loops, strands for
   // Ribbons, rings for Ripples.
@@ -550,6 +557,14 @@ export function Composition() {
     // ──── Appearance (shared by all ink styles) ────
     const appear = ink.addFolder({ title: 'Appearance' });
     appear.addBinding(params, 'inkColor', { label: 'Ink Color' });
+    appear.addBinding(params, 'inkColorMode', {
+      label: 'Color Mode',
+      options: { Solid: 'solid', 'Depth Gradient': 'gradient' },
+    });
+    appear.addBinding(params, 'inkGradStops', { label: 'Gradient Stops', min: 2, max: 3, step: 1 });
+    appear.addBinding(params, 'inkGradColor1', { label: 'Grad Near' });
+    appear.addBinding(params, 'inkGradColor2', { label: 'Grad Mid' });
+    appear.addBinding(params, 'inkGradColor3', { label: 'Grad Far' });
     appear.addBinding(params, 'inkAlpha', { label: 'Stroke Alpha', min: 0.005, max: 1, step: 0.005 });
     appear.addBinding(params, 'inkLineWidth', { label: 'Line Width', min: 0.5, max: 30, step: 0.1 });
     appear.addBinding(params, 'inkLineWidthVariance', {
@@ -1092,7 +1107,7 @@ export function Composition() {
       const loopDepth = new Float64Array(loops.length);
       let minDepth = Infinity;
       let maxDepth = -Infinity;
-      if (depthFade > 0 && cameraActive) {
+      if (cameraActive && (depthFade > 0 || p.inkColorMode === 'gradient')) {
         for (let li = 0; li < loops.length; li++) {
           const L = loops[li];
           const sy = L.cx * sinS + L.cy * cosS;
@@ -1120,6 +1135,24 @@ export function Composition() {
       ctx.lineCap = 'round';
       ctx.lineJoin = 'round';
       if (p.inkBlur > 0) ctx.filter = `blur(${p.inkBlur}px)`;
+
+      // Depth gradient — when on, each element is coloured by its normalised
+      // depth t∈[0,1] (near→far) across 2 or 3 stops instead of the ink colour.
+      const gradOn = p.inkColorMode === 'gradient';
+      const gA = hexToRgb(p.inkGradColor1);
+      const gB = hexToRgb(p.inkGradColor2);
+      const gC = hexToRgb(p.inkGradColor3);
+      const gStops = p.inkGradStops;
+      const gradColor = (t: number, alpha: number) => {
+        const tt = t < 0 ? 0 : t > 1 ? 1 : t;
+        const c =
+          gStops <= 2
+            ? lerpRgb(gA, gB, tt)
+            : tt < 0.5
+              ? lerpRgb(gA, gB, tt * 2)
+              : lerpRgb(gB, gC, (tt - 0.5) * 2);
+        return `rgba(${c.r},${c.g},${c.b},${alpha})`;
+      };
 
       // ──────────── PLANE STYLE ────────────
       // A flat grid surface facing the camera. Droplets land on it and emanate
@@ -1233,8 +1266,11 @@ export function Composition() {
         const dRange = maxD - minD || 1;
         ctx.lineWidth = p.inkLineWidth;
         for (const b of built) {
-          const fog = fade > 0 ? 1 - fade * ((b.depth - minD) / dRange) : 1;
-          ctx.strokeStyle = hslString(baseHsl.h + b.dh, baseHsl.s, baseHsl.l + b.dl, p.inkAlpha * fog);
+          const gt = (b.depth - minD) / dRange;
+          const fog = fade > 0 ? 1 - fade * gt : 1;
+          ctx.strokeStyle = gradOn
+            ? gradColor(gt, p.inkAlpha * fog)
+            : hslString(baseHsl.h + b.dh, baseHsl.s, baseHsl.l + b.dl, p.inkAlpha * fog);
           ctx.beginPath();
           for (let i = 0; i < b.pts.length; i++) {
             const pt = b.pts[i];
@@ -1336,13 +1372,11 @@ export function Composition() {
         const dRange = maxD - minD || 1;
         ctx.lineWidth = p.inkLineWidth;
         for (const b of built) {
-          const fog = fade > 0 ? 1 - fade * ((b.depth - minD) / dRange) : 1;
-          ctx.strokeStyle = hslString(
-            baseHsl.h + b.dh,
-            baseHsl.s,
-            baseHsl.l + b.dl,
-            p.inkAlpha * b.alpha * fog,
-          );
+          const gt = (b.depth - minD) / dRange;
+          const fog = fade > 0 ? 1 - fade * gt : 1;
+          ctx.strokeStyle = gradOn
+            ? gradColor(gt, p.inkAlpha * b.alpha * fog)
+            : hslString(baseHsl.h + b.dh, baseHsl.s, baseHsl.l + b.dl, p.inkAlpha * b.alpha * fog);
           ctx.beginPath();
           for (let i = 0; i < b.pts.length; i++) {
             const pt = b.pts[i];
@@ -1523,15 +1557,13 @@ export function Composition() {
         const lwBaseR = p.inkLineWidth;
         const widthRandR = mulberry32(p.inkSeed ^ 0x5b);
         for (const b of built) {
-          const fog = fade > 0 ? 1 - fade * ((b.mid - minD) / dRange) : 1;
+          const gt = (b.mid - minD) / dRange;
+          const fog = fade > 0 ? 1 - fade * gt : 1;
           const wJitter = (widthRandR() - 0.5) * 2 * p.inkLineWidthVariance;
           ctx.lineWidth = Math.max(0.3, lwBaseR * (1 + wJitter));
-          ctx.strokeStyle = hslString(
-            baseHsl.h + b.dh,
-            baseHsl.s,
-            baseHsl.l + b.dl,
-            p.inkAlpha * fog,
-          );
+          ctx.strokeStyle = gradOn
+            ? gradColor(gt, p.inkAlpha * fog)
+            : hslString(baseHsl.h + b.dh, baseHsl.s, baseHsl.l + b.dl, p.inkAlpha * fog);
           ctx.beginPath();
           for (let i = 0; i < b.pts.length; i++) {
             const pt = b.pts[i];
@@ -1647,6 +1679,7 @@ export function Composition() {
           const t = (loopDepth[li] - minDepth) / depthRange;
           fog = 1 - depthFade * t;
         }
+        const gt = (loopDepth[li] - minDepth) / depthRange; // gradient depth t
 
         // 4. Per-loop line width with deterministic ± variance
         const wJitter = (widthRand() - 0.5) * 2 * lwVar;
@@ -1656,12 +1689,9 @@ export function Composition() {
         // main line — adds the "inner shadow" depth where loops overlap).
         if (p.inkGlowWidth > 0) {
           ctx.lineWidth = loopWidth + p.inkGlowWidth;
-          ctx.strokeStyle = hslString(
-            baseHsl.h + L.dh,
-            baseHsl.s,
-            baseHsl.l + L.dl,
-            p.inkGlowAlpha * fog,
-          );
+          ctx.strokeStyle = gradOn
+            ? gradColor(gt, p.inkGlowAlpha * fog)
+            : hslString(baseHsl.h + L.dh, baseHsl.s, baseHsl.l + L.dl, p.inkGlowAlpha * fog);
           ctx.beginPath();
           for (let i = 0; i < nVerts; i++) {
             const w = warped[i];
@@ -1674,12 +1704,9 @@ export function Composition() {
 
         // 6. Main line pass.
         ctx.lineWidth = loopWidth;
-        ctx.strokeStyle = hslString(
-          baseHsl.h + L.dh,
-          baseHsl.s,
-          baseHsl.l + L.dl,
-          p.inkAlpha * fog,
-        );
+        ctx.strokeStyle = gradOn
+          ? gradColor(gt, p.inkAlpha * fog)
+          : hslString(baseHsl.h + L.dh, baseHsl.s, baseHsl.l + L.dl, p.inkAlpha * fog);
         ctx.beginPath();
         for (let i = 0; i < nVerts; i++) {
           const w = warped[i];
@@ -1863,6 +1890,11 @@ export function Composition() {
     p.renderMode,
     loops,
     p.inkColor,
+    p.inkColorMode,
+    p.inkGradStops,
+    p.inkGradColor1,
+    p.inkGradColor2,
+    p.inkGradColor3,
     p.inkCull,
     p.inkAlpha,
     p.inkLineWidth,
