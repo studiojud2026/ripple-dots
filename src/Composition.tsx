@@ -686,7 +686,7 @@ export function Composition() {
     // ──── Plane sub-folder (ink style = plane) ────
     const plane = ink.addFolder({ title: 'Plane', expanded: true });
     tag(plane, PLANE);
-    plane.addBinding(params, 'inkPlaneLines', { label: 'Grid Lines', min: 4, max: 160, step: 1 });
+    plane.addBinding(params, 'inkPlaneLines', { label: 'Grid Lines', min: 4, max: 750, step: 1 });
     plane.addBinding(params, 'inkPlaneSize', { label: 'Plane Size', min: 0.4, max: 2, step: 0.01 });
     plane.addBinding(params, 'inkPlaneGrid', {
       label: 'Grid',
