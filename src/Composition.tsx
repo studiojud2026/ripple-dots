@@ -288,6 +288,9 @@ export function Composition() {
   // Ink sub-style blades toggled by inkStyle. Each entry lists which styles it
   // applies to; a blade is shown only when the current style is in its set.
   const inkStyleBladesRef = useRef<{ blade: { hidden: boolean }; styles: string[] }[]>([]);
+  // The Tweakpane instance, so mode/style switches can refresh stale displays
+  // (e.g. the two rotation bindings that share one param across modes).
+  const paneRef = useRef<{ refresh: () => void } | null>(null);
   // The render effect stores its drawing closure here so PNG export can replay
   // it onto an offscreen canvas at a higher resolution.
   const drawSceneRef = useRef<((ctx: CanvasRenderingContext2D, size: number) => void) | null>(
@@ -400,9 +403,7 @@ export function Composition() {
       options: { Dots: 'dots', Ink: 'ink' },
     });
 
-    // ──────────── SHARED ────────────
-    // Shape + Background are shared by both modes (the silhouette and the
-    // canvas background colour matter regardless of what's being drawn).
+    // ──────────── CANVAS (shared) ────────────
     const shared = pane.addFolder({ title: 'Canvas' });
     shared.addBinding(params, 'shape', {
       options: {
@@ -418,11 +419,9 @@ export function Composition() {
     });
     shared.addBinding(params, 'customPath', { label: 'Custom Path' });
     shared.addBinding(params, 'radius', { min: 40, max: 600, step: 1 });
-    shared.addBinding(params, 'rotation', { min: -180, max: 180, step: 1 });
     shared.addBinding(params, 'background');
-    // Quick theme presets — Light = white bg + multiply (ink reads as real
-    // pigment); Dark = black bg + screen (ink glows light on black). Refresh
-    // so the background/blend bindings reflect the change in the panel.
+    // Quick theme presets — Light = white bg + multiply; Dark = black bg +
+    // screen. Refresh so the background/blend bindings reflect the change.
     const setTheme = (bg: string, blend: 'multiply' | 'screen') => {
       params.background = bg;
       params.inkBlend = blend;
@@ -432,7 +431,7 @@ export function Composition() {
     shared.addButton({ title: 'Light Mode' }).on('click', () => setTheme('#ffffff', 'multiply'));
     shared.addButton({ title: 'Dark Mode' }).on('click', () => setTheme('#000000', 'screen'));
 
-    // ──────────── DOT MODE ────────────
+    // ════════════ DOT MODE ════════════
     const dotBlades: { hidden: boolean }[] = [];
 
     const generator = pane.addBinding(params, 'generator', {
@@ -451,10 +450,11 @@ export function Composition() {
     dotBlades.push(comp);
     comp.addBinding(params, 'spacing', { min: 2, max: 60, step: 1 });
     comp.addBinding(params, 'density', { min: 1, max: 12, step: 1 });
+    comp.addBinding(params, 'rotation', { label: 'Rotation', min: -180, max: 180, step: 1 });
     comp.addBinding(params, 'tilt', { min: -89, max: 89, step: 1 });
     comp.addBinding(params, 'perspective', { min: 200, max: 4000, step: 10 });
 
-    const dot = pane.addFolder({ title: 'Dot' });
+    const dot = pane.addFolder({ title: 'Dots' });
     dotBlades.push(dot);
     dot.addBinding(params, 'dotShape', {
       label: 'Shape',
@@ -494,7 +494,7 @@ export function Composition() {
     rip.addBinding(params, 'rippleAnimate', { label: 'Animate' });
     rip.addBinding(params, 'rippleSpeed', { label: 'Speed', min: 0, max: 5, step: 0.01 });
 
-    const extra = pane.addFolder({ title: 'Extra Ripples', expanded: false });
+    const extra = pane.addFolder({ title: 'Extra Ripples' });
     dotBlades.push(extra);
     extra.addBinding(params, 'extraCount', { label: 'Count', min: 0, max: 12, step: 1 });
     extra.addBinding(params, 'extraDepth', { label: 'Depth Mix', min: 0, max: 2, step: 0.01 });
@@ -511,7 +511,7 @@ export function Composition() {
     shuffleGen.on('click', () => setSeed((s) => s + 1));
     dotBlades.push(shuffleGen);
 
-    // ──────────── INK MODE ────────────
+    // ════════════ INK MODE ════════════
     const inkBlades: { hidden: boolean }[] = [];
     // Style-tagged blades — shown only when the current inkStyle is listed.
     const styleBlades: { blade: { hidden: boolean }; styles: string[] }[] = [];
@@ -531,64 +531,49 @@ export function Composition() {
       label: 'Style',
       options: { Loops: 'loops', Ribbons: 'ribbons', Ripples: 'ripples', Plane: 'plane' },
     });
-    tag(ink.addBinding(params, 'inkCount', { label: 'Count', min: 1, max: 2500, step: 1 }), LOOPS);
-    ink.addBinding(params, 'inkColor', { label: 'Ink Color' });
-    ink.addBinding(params, 'inkCull', { label: 'Cull (keep 1/N)', min: 1, max: 50, step: 1 });
-    tag(ink.addBinding(params, 'inkSizeMin', { label: 'Size Min', min: 0, max: 600, step: 1 }), LOOPS);
-    tag(ink.addBinding(params, 'inkSizeMax', { label: 'Size Max', min: 10, max: 800, step: 1 }), LOOPS);
-    tag(
-      ink.addBinding(params, 'inkRadiusShrink', { label: 'Radius Shrink', min: 0, max: 1, step: 0.01 }),
-      LOOPS,
-    );
-    tag(
-      ink.addBinding(params, 'inkAspectVariance', {
-        label: 'Aspect Variance',
-        min: 0,
-        max: 0.9,
-        step: 0.01,
-      }),
-      LOOPS,
-    );
-    ink.addBinding(params, 'inkAlpha', { label: 'Stroke Alpha', min: 0.005, max: 0.5, step: 0.005 });
-    ink.addBinding(params, 'inkLineWidth', { label: 'Line Width', min: 0.5, max: 30, step: 0.1 });
-    ink.addBinding(params, 'inkLineWidthVariance', {
+
+    // ──── Appearance (shared by all ink styles) ────
+    const appear = ink.addFolder({ title: 'Appearance' });
+    appear.addBinding(params, 'inkColor', { label: 'Ink Color' });
+    appear.addBinding(params, 'inkAlpha', { label: 'Stroke Alpha', min: 0.005, max: 0.5, step: 0.005 });
+    appear.addBinding(params, 'inkLineWidth', { label: 'Line Width', min: 0.5, max: 30, step: 0.1 });
+    appear.addBinding(params, 'inkLineWidthVariance', {
       label: 'Width Variance',
       min: 0,
       max: 1,
       step: 0.01,
     });
-    ink.addBinding(params, 'inkGlowWidth', { label: 'Glow Width', min: 0, max: 60, step: 0.5 });
-    ink.addBinding(params, 'inkGlowAlpha', { label: 'Glow Alpha', min: 0, max: 0.3, step: 0.005 });
-    ink.addBinding(params, 'inkBlur', { label: 'Blur', min: 0, max: 12, step: 0.1 });
-    ink.addBinding(params, 'inkHueShift', { label: 'Hue Jitter', min: 0, max: 180, step: 1 });
-    ink.addBinding(params, 'inkLightnessShift', {
+    appear.addBinding(params, 'inkBlur', { label: 'Blur', min: 0, max: 12, step: 0.1 });
+    appear.addBinding(params, 'inkHueShift', { label: 'Hue Jitter', min: 0, max: 180, step: 1 });
+    appear.addBinding(params, 'inkLightnessShift', {
       label: 'Lightness Jitter',
       min: 0,
       max: 50,
       step: 1,
     });
-    ink.addBinding(params, 'inkBlend', {
+    appear.addBinding(params, 'inkBlend', {
       label: 'Blend',
-      options: {
-        Multiply: 'multiply',
-        Screen: 'screen',
-        Normal: 'source-over',
-        Lighter: 'lighter',
-      },
+      options: { Multiply: 'multiply', Screen: 'screen', Normal: 'source-over', Lighter: 'lighter' },
     });
-    ink.addBinding(params, 'inkVertices', { label: 'Vertices', min: 12, max: 256, step: 1 });
-    ink.addBinding(params, 'inkSeed', { label: 'Seed', min: 0, max: 9999, step: 1 });
-    ink.addButton({ title: 'Shuffle Ink' }).on('click', () => {
+    appear.addBinding(params, 'inkCull', { label: 'Cull (keep 1/N)', min: 1, max: 50, step: 1 });
+    appear.addBinding(params, 'inkVertices', { label: 'Vertices', min: 12, max: 256, step: 1 });
+    appear.addBinding(params, 'inkSeed', { label: 'Seed', min: 0, max: 9999, step: 1 });
+    appear.addButton({ title: 'Shuffle Ink' }).on('click', () => {
       params.inkSeed = Math.floor(Math.random() * 9999);
       pane.refresh();
       force();
     });
 
-    // ──── Placement sub-folder ────
-    // Where loop centers go. Each path mode is a deterministic curve sampled
-    // at inkCount points. Param A/B/C/D mean different things per mode (see
-    // INK_PATH_PARAM_LABELS in placement.ts and the README).
-    const place = ink.addFolder({ title: 'Placement', expanded: true });
+    // ──── Camera (shared by all ink styles) ────
+    const cam = ink.addFolder({ title: 'Camera' });
+    cam.addBinding(params, 'rotation', { label: 'Rotation', min: -180, max: 180, step: 1 });
+    cam.addBinding(params, 'inkTilt', { label: 'Tilt', min: -89, max: 89, step: 1 });
+    cam.addBinding(params, 'inkPerspective', { label: 'Perspective', min: 200, max: 4000, step: 10 });
+    cam.addBinding(params, 'inkDepthSpread', { label: 'Depth Spread', min: 0, max: 1.5, step: 0.01 });
+    cam.addBinding(params, 'inkDepthFade', { label: 'Depth Fade', min: 0, max: 1, step: 0.01 });
+
+    // ──── Placement (loops + ripples) ────
+    const place = ink.addFolder({ title: 'Placement' });
     tag(place, LOOPS_RIPPLES);
     place.addBinding(params, 'inkPath', {
       label: 'Path',
@@ -599,24 +584,9 @@ export function Composition() {
     place.addBinding(params, 'inkPathC', { label: 'Param C', min: -3, max: 3, step: 0.01 });
     place.addBinding(params, 'inkPathD', { label: 'Param D', min: -3, max: 3, step: 0.01 });
     place.addBinding(params, 'inkTurns', { label: 'Turns', min: 0.1, max: 12, step: 0.1 });
-    place.addBinding(params, 'inkPathPhase', {
-      label: 'Phase',
-      min: 0,
-      max: Math.PI * 2,
-      step: 0.01,
-    });
-    place.addBinding(params, 'inkPathScale', {
-      label: 'Path Scale',
-      min: 0,
-      max: 1,
-      step: 0.01,
-    });
-    place.addBinding(params, 'inkCenterShrink', {
-      label: 'Center Shrink',
-      min: 0,
-      max: 1,
-      step: 0.01,
-    });
+    place.addBinding(params, 'inkPathPhase', { label: 'Phase', min: 0, max: Math.PI * 2, step: 0.01 });
+    place.addBinding(params, 'inkPathScale', { label: 'Path Scale', min: 0, max: 1, step: 0.01 });
+    place.addBinding(params, 'inkCenterShrink', { label: 'Center Shrink', min: 0, max: 1, step: 0.01 });
     place.addBinding(params, 'inkShapeInfluence', {
       label: 'Shape Influence',
       min: 0,
@@ -624,31 +594,21 @@ export function Composition() {
       step: 0.01,
     });
 
-    // ──── Camera sub-folder ────
-    // 3D camera for ink. Rotation (in the shared Canvas folder) spins the
-    // artwork in-plane; Tilt pitches it back; Perspective sets focal length.
-    const cam = ink.addFolder({ title: 'Camera', expanded: false });
-    cam.addBinding(params, 'inkTilt', { label: 'Tilt', min: -89, max: 89, step: 1 });
-    cam.addBinding(params, 'inkPerspective', {
-      label: 'Perspective',
-      min: 200,
-      max: 4000,
-      step: 10,
-    });
-    cam.addBinding(params, 'inkDepthSpread', {
-      label: 'Depth Spread',
+    // ──── Loops (loops only) ────
+    const loops = ink.addFolder({ title: 'Loops' });
+    tag(loops, LOOPS);
+    loops.addBinding(params, 'inkCount', { label: 'Count', min: 1, max: 2500, step: 1 });
+    loops.addBinding(params, 'inkSizeMin', { label: 'Size Min', min: 0, max: 600, step: 1 });
+    loops.addBinding(params, 'inkSizeMax', { label: 'Size Max', min: 10, max: 800, step: 1 });
+    loops.addBinding(params, 'inkRadiusShrink', { label: 'Radius Shrink', min: 0, max: 1, step: 0.01 });
+    loops.addBinding(params, 'inkAspectVariance', {
+      label: 'Aspect Variance',
       min: 0,
-      max: 1.5,
+      max: 0.9,
       step: 0.01,
     });
-    cam.addBinding(params, 'inkDepthFade', { label: 'Depth Fade', min: 0, max: 1, step: 0.01 });
-
-    // Ink-only ripple settings — nested inside the Ink folder so the panel
-    // visually reads as a single self-contained section, NOT shared with the
-    // dot Ripple/Extra Ripples folders above.
-    const inkRip = ink.addFolder({ title: 'Ripple', expanded: false });
-    tag(inkRip, LOOPS);
-    inkRip.addBinding(params, 'inkRippleKind', {
+    const loopRip = loops.addFolder({ title: 'Ripple' });
+    loopRip.addBinding(params, 'inkRippleKind', {
       label: 'Kind',
       options: {
         Off: 'off',
@@ -660,25 +620,42 @@ export function Composition() {
         'Edge Pulse (shape)': 'edge-pulse',
       },
     });
-    inkRip.addBinding(params, 'inkRippleFrequency', {
-      label: 'Frequency',
-      min: 0.05,
-      max: 10,
-      step: 0.05,
-    });
-    inkRip.addBinding(params, 'inkRippleDepth', { label: 'Depth', min: 0, max: 200, step: 1 });
-    inkRip.addBinding(params, 'inkRippleDecay', { label: 'Decay', min: 0, max: 100, step: 1 });
-    inkRip.addBinding(params, 'inkRippleZScale', {
-      label: 'Z → Push',
-      min: 0,
-      max: 2,
-      step: 0.01,
-    });
-    inkRip.addBinding(params, 'inkRippleAnimate', { label: 'Animate' });
-    inkRip.addBinding(params, 'inkRippleSpeed', { label: 'Speed', min: 0, max: 5, step: 0.01 });
+    loopRip.addBinding(params, 'inkRippleFrequency', { label: 'Frequency', min: 0.05, max: 10, step: 0.05 });
+    loopRip.addBinding(params, 'inkRippleDepth', { label: 'Depth', min: 0, max: 200, step: 1 });
+    loopRip.addBinding(params, 'inkRippleDecay', { label: 'Decay', min: 0, max: 100, step: 1 });
+    loopRip.addBinding(params, 'inkRippleZScale', { label: 'Z → Push', min: 0, max: 2, step: 0.01 });
+    loopRip.addBinding(params, 'inkRippleAnimate', { label: 'Animate' });
+    loopRip.addBinding(params, 'inkRippleSpeed', { label: 'Speed', min: 0, max: 5, step: 0.01 });
+    const loopGlow = loops.addFolder({ title: 'Glow' });
+    loopGlow.addBinding(params, 'inkGlowWidth', { label: 'Glow Width', min: 0, max: 60, step: 0.5 });
+    loopGlow.addBinding(params, 'inkGlowAlpha', { label: 'Glow Alpha', min: 0, max: 0.3, step: 0.005 });
 
-    // ──── Water Rings sub-folder (ink style = ripples) ────
-    const water = ink.addFolder({ title: 'Water Rings', expanded: true });
+    // ──── Ribbons (ribbons only) ────
+    const rib = ink.addFolder({ title: 'Ribbons' });
+    tag(rib, RIBBONS);
+    rib.addBinding(params, 'inkRibbonCount', { label: 'Count', min: 1, max: 80, step: 1 });
+    rib.addBinding(params, 'inkRibbonWidth', { label: 'Width', min: 4, max: 1400, step: 1 });
+    rib.addBinding(params, 'inkRibbonStrands', { label: 'Strands', min: 1, max: 300, step: 1 });
+    rib.addBinding(params, 'inkRibbonAmplitude', { label: 'Amplitude', min: 0, max: 400, step: 1 });
+    rib.addBinding(params, 'inkRibbonWaveFreq', { label: 'Wave Freq', min: 0, max: 8, step: 0.05 });
+    rib.addBinding(params, 'inkRibbonTwist', { label: 'Twist', min: 0, max: 10, step: 0.05 });
+    rib.addBinding(params, 'inkRibbonSpan', { label: 'Span', min: 0.5, max: 2, step: 0.01 });
+    rib.addBinding(params, 'inkRibbonSpread', { label: 'Spread', min: 0, max: 1, step: 0.01 });
+    const ribDrop = rib.addFolder({ title: 'Droplet' });
+    ribDrop.addBinding(params, 'inkRibbonRippleAmp', { label: 'Droplet Amp', min: 0, max: 80, step: 0.5 });
+    ribDrop.addBinding(params, 'inkRibbonRippleFreq', { label: 'Droplet Rings', min: 0, max: 16, step: 0.1 });
+    ribDrop.addBinding(params, 'inkRibbonRippleFalloff', { label: 'Droplet Falloff', min: 0, max: 4, step: 0.05 });
+    ribDrop.addBinding(params, 'inkRibbonRippleSource', {
+      label: 'Droplet From',
+      options: { 'Ribbon Surface': 'ribbon', Canvas: 'canvas' },
+    });
+    ribDrop.addBinding(params, 'inkRibbonDropCount', { label: 'Droplets', min: 1, max: 8, step: 1 });
+    ribDrop.addBinding(params, 'inkRibbonDropSpread', { label: 'Drop Spread', min: 0, max: 1, step: 0.01 });
+    rib.addBinding(params, 'inkRibbonAnimate', { label: 'Animate (L→R)' });
+    rib.addBinding(params, 'inkRibbonSpeed', { label: 'Speed', min: 0, max: 5, step: 0.01 });
+
+    // ──── Water Rings (ripples only) ────
+    const water = ink.addFolder({ title: 'Water Rings' });
     tag(water, RIPPLES);
     water.addBinding(params, 'inkWaterSources', { label: 'Sources', min: 1, max: 12, step: 1 });
     water.addBinding(params, 'inkWaterRings', { label: 'Rings', min: 1, max: 60, step: 1 });
@@ -690,8 +667,8 @@ export function Composition() {
     water.addBinding(params, 'inkWaterAnimate', { label: 'Animate (expand)' });
     water.addBinding(params, 'inkWaterSpeed', { label: 'Speed', min: 0, max: 5, step: 0.01 });
 
-    // ──── Plane sub-folder (ink style = plane) ────
-    const plane = ink.addFolder({ title: 'Plane', expanded: true });
+    // ──── Plane (plane only) ────
+    const plane = ink.addFolder({ title: 'Plane' });
     tag(plane, PLANE);
     plane.addBinding(params, 'inkPlaneLines', { label: 'Grid Lines', min: 4, max: 750, step: 1 });
     plane.addBinding(params, 'inkPlaneSize', { label: 'Plane Size', min: 0.4, max: 2, step: 0.01 });
@@ -699,77 +676,27 @@ export function Composition() {
       label: 'Grid',
       options: { 'Rows + Cols': 'both', 'Rows only': 'rows' },
     });
-    plane.addBinding(params, 'inkPlaneDrops', { label: 'Droplets', min: 1, max: 12, step: 1 });
-    plane.addBinding(params, 'inkPlaneSpread', { label: 'Drop Spread', min: 0, max: 1, step: 0.01 });
-    plane.addBinding(params, 'inkPlaneRingFreq', { label: 'Ring Freq', min: 0.5, max: 20, step: 0.1 });
-    plane.addBinding(params, 'inkPlaneAmp', { label: 'Wave Height', min: 0, max: 120, step: 1 });
-    plane.addBinding(params, 'inkPlaneBend', { label: 'Surface Bend', min: 0, max: 40, step: 0.5 });
-    plane.addBinding(params, 'inkPlaneFalloff', { label: 'Falloff', min: 0, max: 4, step: 0.05 });
-    plane.addBinding(params, 'inkPlaneSpiral', { label: 'Spiral', min: -6, max: 6, step: 0.05 });
-    plane.addBinding(params, 'inkPlaneWobble', { label: 'Wobble', min: 0, max: 200, step: 1 });
-    plane.addBinding(params, 'inkPlaneWobbleScale', {
-      label: 'Wobble Scale',
-      min: 0.2,
-      max: 8,
-      step: 0.05,
-    });
-    plane.addBinding(params, 'inkPlaneAnimate', { label: 'Animate (expand)' });
-    plane.addBinding(params, 'inkPlaneSpeed', { label: 'Speed', min: 0, max: 5, step: 0.01 });
-
-    // ──── Ribbon sub-folder (ink style = ribbons) ────
-    const rib = ink.addFolder({ title: 'Ribbons', expanded: true });
-    tag(rib, RIBBONS);
-    rib.addBinding(params, 'inkRibbonCount', { label: 'Count', min: 1, max: 80, step: 1 });
-    // Width and Strands ranges are large so a SINGLE ribbon can span the
-    // canvas as a dense strand sheet — that's how the droplet ripple reads
-    // with just 1–2 ribbons (the strands are the ripple contour lines).
-    rib.addBinding(params, 'inkRibbonWidth', { label: 'Width', min: 4, max: 1400, step: 1 });
-    rib.addBinding(params, 'inkRibbonStrands', { label: 'Strands', min: 1, max: 300, step: 1 });
-    rib.addBinding(params, 'inkRibbonAmplitude', { label: 'Amplitude', min: 0, max: 400, step: 1 });
-    rib.addBinding(params, 'inkRibbonWaveFreq', { label: 'Wave Freq', min: 0, max: 8, step: 0.05 });
-    rib.addBinding(params, 'inkRibbonTwist', { label: 'Twist', min: 0, max: 10, step: 0.05 });
-    rib.addBinding(params, 'inkRibbonSpan', { label: 'Span', min: 0.5, max: 2, step: 0.01 });
-    rib.addBinding(params, 'inkRibbonSpread', { label: 'Spread', min: 0, max: 1, step: 0.01 });
-    rib.addBinding(params, 'inkRibbonRippleAmp', {
-      label: 'Droplet Amp',
-      min: 0,
-      max: 80,
-      step: 0.5,
-    });
-    rib.addBinding(params, 'inkRibbonRippleFreq', {
-      label: 'Droplet Rings',
-      min: 0,
-      max: 16,
-      step: 0.1,
-    });
-    rib.addBinding(params, 'inkRibbonRippleFalloff', {
-      label: 'Droplet Falloff',
-      min: 0,
-      max: 4,
-      step: 0.05,
-    });
-    rib.addBinding(params, 'inkRibbonRippleSource', {
-      label: 'Droplet From',
-      options: { 'Ribbon Surface': 'ribbon', Canvas: 'canvas' },
-    });
-    rib.addBinding(params, 'inkRibbonDropCount', { label: 'Droplets', min: 1, max: 8, step: 1 });
-    rib.addBinding(params, 'inkRibbonDropSpread', {
-      label: 'Drop Spread',
-      min: 0,
-      max: 1,
-      step: 0.01,
-    });
-    rib.addBinding(params, 'inkRibbonAnimate', { label: 'Animate (L→R)' });
-    rib.addBinding(params, 'inkRibbonSpeed', { label: 'Speed', min: 0, max: 5, step: 0.01 });
+    const planeDrop = plane.addFolder({ title: 'Droplet' });
+    planeDrop.addBinding(params, 'inkPlaneDrops', { label: 'Droplets', min: 1, max: 12, step: 1 });
+    planeDrop.addBinding(params, 'inkPlaneSpread', { label: 'Drop Spread', min: 0, max: 1, step: 0.01 });
+    planeDrop.addBinding(params, 'inkPlaneRingFreq', { label: 'Ring Freq', min: 0.5, max: 20, step: 0.1 });
+    planeDrop.addBinding(params, 'inkPlaneAmp', { label: 'Wave Height', min: 0, max: 120, step: 1 });
+    planeDrop.addBinding(params, 'inkPlaneBend', { label: 'Surface Bend', min: 0, max: 40, step: 0.5 });
+    planeDrop.addBinding(params, 'inkPlaneFalloff', { label: 'Falloff', min: 0, max: 4, step: 0.05 });
+    planeDrop.addBinding(params, 'inkPlaneAnimate', { label: 'Animate (expand)' });
+    planeDrop.addBinding(params, 'inkPlaneSpeed', { label: 'Speed', min: 0, max: 5, step: 0.01 });
+    const planePat = plane.addFolder({ title: 'Pattern' });
+    planePat.addBinding(params, 'inkPlaneSpiral', { label: 'Spiral', min: -6, max: 6, step: 0.05 });
+    planePat.addBinding(params, 'inkPlaneWobble', { label: 'Wobble', min: 0, max: 200, step: 1 });
+    planePat.addBinding(params, 'inkPlaneWobbleScale', { label: 'Wobble Scale', min: 0.2, max: 8, step: 0.05 });
 
     // ──────────── EXPORT (shared) ────────────
-    // Absolute output resolutions — dpr-independent, so what you pick is what
-    // you get regardless of screen or window size.
     const exp = pane.addFolder({ title: 'Export', expanded: false });
     exp.addButton({ title: 'PNG 2048px' }).on('click', () => exportPng(2048));
     exp.addButton({ title: 'PNG 4096px' }).on('click', () => exportPng(4096));
     exp.addButton({ title: 'PNG 8192px' }).on('click', () => exportPng(8192));
 
+    paneRef.current = pane;
     dotBladesRef.current = dotBlades;
     inkBladesRef.current = inkBlades;
     inkStyleBladesRef.current = styleBlades;
@@ -798,6 +725,8 @@ export function Composition() {
     inkStyleBladesRef.current.forEach(
       ({ blade, styles }) => (blade.hidden = !styles.includes(p.inkStyle)),
     );
+    // Sync any bindings that share a param across modes (e.g. rotation).
+    paneRef.current?.refresh();
   }, [p.renderMode, p.inkStyle]);
 
   // Phase animation — drives whichever mode's animate toggle is on.

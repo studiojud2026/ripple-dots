@@ -28,7 +28,13 @@
       "Bash(git stash *)",
       "Bash(grep -n \"options: { Loops: 'loops', Ribbons: 'ribbons', Ripples: 'ripples' },\" src/Composition.tsx)",
       "Bash(grep -n \"const surface = \\(x: number, y: number\\) => {\\\\|const lineRand = mulberry32\\(p.inkSeed ^ 0x7c\\);\" src/Composition.tsx)",
-      "Bash(curl -s -o /dev/null -w \"%{http_code}\" http://localhost:5173/)"
+      "Bash(curl -s -o /dev/null -w \"%{http_code}\" http://localhost:5173/)",
+      "Bash(sed -n '405,772p' src/Composition.tsx)",
+      "Read(//tmp/**)",
+      "Bash(git checkout *)",
+      "Bash(grep -n \"inkStyleBladesRef = useRef\\\\|pane.addBinding\\(params, 'renderMode'\\\\|dotBladesRef.current = dotBlades;\\\\|exp.addButton\\({ title: 'PNG 8192px' }\\)\" src/Composition.tsx)",
+      "Bash(python3 -c ' *)",
+      "Bash(sed -n '405,408p' src/Composition.tsx)"
     ]
   }
 }
