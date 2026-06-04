@@ -715,7 +715,7 @@ export function Composition() {
     cam.addBinding(params, 'inkTilt', { label: 'Tilt', min: -89, max: 89, step: 1 });
     cam.addBinding(params, 'inkPerspective', { label: 'Perspective', min: 200, max: 4000, step: 10 });
     cam.addBinding(params, 'zoom', { label: 'Zoom', min: 0.1, max: 5, step: 0.01 });
-    cam.addBinding(params, 'inkDepthSpread', { label: 'Depth Spread', min: 0, max: 1.5, step: 0.01 });
+    cam.addBinding(params, 'inkDepthSpread', { label: 'Depth Spread', min: 0, max: 6, step: 0.01 });
     cam.addBinding(params, 'inkDepthFade', { label: 'Depth Fade', min: 0, max: 1, step: 0.01 });
 
     // ──────────── EXPORT (shared) ────────────
