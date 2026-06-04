@@ -293,10 +293,12 @@ export function Composition() {
   const paneRef = useRef<{ refresh: () => void } | null>(null);
   // The render effect stores its drawing closure here so PNG export can replay
   // it onto an offscreen canvas at a higher resolution.
-  const drawSceneRef = useRef<((ctx: CanvasRenderingContext2D, size: number) => void) | null>(
-    null,
-  );
+  const drawSceneRef = useRef<
+    ((ctx: CanvasRenderingContext2D, w: number, h: number) => void) | null
+  >(null);
   const [, force] = useReducer((n: number) => n + 1, 0);
+  // Bumped on window resize so the render effect re-reads viewport dimensions.
+  const [resizeTick, bumpResize] = useReducer((n: number) => n + 1, 0);
   const [seed, setSeed] = useState(1);
   const [phase, setPhase] = useState(0);
   const [imageSrc, setImageSrc] = useState<string | null>(null);
@@ -357,15 +359,17 @@ export function Composition() {
   const exportPng = (targetPx: number) => {
     const draw = drawSceneRef.current;
     if (!draw) return;
-    const size = Math.min(window.innerWidth, window.innerHeight);
-    const scale = targetPx / size;
+    // Match the viewport aspect ratio; the long edge is targetPx.
+    const vw = window.innerWidth;
+    const vh = window.innerHeight;
+    const scale = targetPx / Math.max(vw, vh);
     const off = document.createElement('canvas');
-    off.width = targetPx;
-    off.height = targetPx;
+    off.width = Math.round(vw * scale);
+    off.height = Math.round(vh * scale);
     const ctx = off.getContext('2d');
     if (!ctx) return;
     ctx.setTransform(scale, 0, 0, scale, 0, 0);
-    draw(ctx, size);
+    draw(ctx, vw, vh);
     off.toBlob((blob) => {
       if (!blob) {
         // Browsers cap canvas area (Safari especially). Fall back gracefully.
@@ -376,7 +380,7 @@ export function Composition() {
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
-      a.download = `ripple-${targetPx}px.png`;
+      a.download = `ripple-${off.width}x${off.height}.png`;
       a.click();
       URL.revokeObjectURL(url);
     }, 'image/png');
@@ -719,6 +723,13 @@ export function Composition() {
   const p = paramsRef.current;
   const prevModeRef = useRef(p.renderMode);
 
+  // Redraw on window resize (canvas fills the viewport).
+  useEffect(() => {
+    const onResize = () => bumpResize();
+    window.addEventListener('resize', onResize);
+    return () => window.removeEventListener('resize', onResize);
+  }, []);
+
   // Toggle panel visibility when Render Mode flips. Runs after the mount
   // effect has populated the refs.
   useEffect(() => {
@@ -1010,29 +1021,31 @@ export function Composition() {
     if (!ctx) return;
 
     const dpr = window.devicePixelRatio || 1;
-    const size = Math.min(window.innerWidth, window.innerHeight);
-    canvas.width = size * dpr;
-    canvas.height = size * dpr;
-    canvas.style.width = `${size}px`;
-    canvas.style.height = `${size}px`;
+    // Canvas fills the full viewport (was a centered square).
+    const w = window.innerWidth;
+    const h = window.innerHeight;
+    canvas.width = w * dpr;
+    canvas.height = h * dpr;
+    canvas.style.width = `${w}px`;
+    canvas.style.height = `${h}px`;
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
 
     // All drawing lives in paint() so PNG export can replay it onto an
-    // offscreen canvas. ctx/size are params (shadow the outer canvas refs);
+    // offscreen canvas. ctx/w/h are params (shadow the outer canvas refs);
     // the function is hoisted, so the call + ref assignment above it work.
     drawSceneRef.current = paint;
-    paint(ctx, size);
+    paint(ctx, w, h);
 
-    function paint(ctx: CanvasRenderingContext2D, size: number) {
+    function paint(ctx: CanvasRenderingContext2D, w: number, h: number) {
     ctx.fillStyle = p.background;
-    ctx.fillRect(0, 0, size, size);
+    ctx.fillRect(0, 0, w, h);
 
     // ============================================================
     // INK MODE — overlapping shape-clipped loop strokes
     // ============================================================
     if (p.renderMode === 'ink') {
       ctx.save();
-      ctx.translate(size / 2, size / 2);
+      ctx.translate(w / 2, h / 2);
 
       // 3D camera. Rotation spins the artwork in-plane (around the viewing
       // axis); tilt pitches it back around the horizontal axis; perspective
@@ -1642,7 +1655,7 @@ export function Composition() {
     // DOT MODE
     // ============================================================
     ctx.save();
-    ctx.translate(size / 2, size / 2);
+    ctx.translate(w / 2, h / 2);
 
     const yaw = (p.rotation * Math.PI) / 180;
     const pitch = (p.tilt * Math.PI) / 180;
@@ -1868,6 +1881,7 @@ export function Composition() {
     p.rippleDecay,
     phase,
     shapeKind,
+    resizeTick,
   ]);
 
   const needsImage = shapeKind === 'image' || p.mode === 'image';
