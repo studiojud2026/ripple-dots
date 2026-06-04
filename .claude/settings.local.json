@@ -26,7 +26,8 @@
       "Bash(xargs kill -9)",
       "Bash(git revert *)",
       "Bash(git stash *)",
-      "Bash(grep -n \"options: { Loops: 'loops', Ribbons: 'ribbons', Ripples: 'ripples' },\" src/Composition.tsx)"
+      "Bash(grep -n \"options: { Loops: 'loops', Ribbons: 'ribbons', Ripples: 'ripples' },\" src/Composition.tsx)",
+      "Bash(grep -n \"const surface = \\(x: number, y: number\\) => {\\\\|const lineRand = mulberry32\\(p.inkSeed ^ 0x7c\\);\" src/Composition.tsx)"
     ]
   }
 }
