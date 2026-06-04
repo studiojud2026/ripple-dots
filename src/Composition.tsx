@@ -143,6 +143,10 @@ const DEFAULTS = {
   // low alpha for clean overlap stacking on light backgrounds.
   inkCount: 90,
   inkColor: '#c83a8d',
+  // Cull — keep only every Nth stroke (1 = all). Thins the dense cloud down
+  // to a representative few REAL strokes: loops for Loops, strands for
+  // Ribbons, rings for Ripples.
+  inkCull: 1,
   inkSizeMin: 60, // innermost circle radius at the end of the path
   inkSizeMax: 360, // outermost circle radius at the start of the path
   inkAspectVariance: 0, // pure circles by default; ramp up for ellipses
@@ -507,6 +511,7 @@ export function Composition() {
     });
     tag(ink.addBinding(params, 'inkCount', { label: 'Count', min: 1, max: 2500, step: 1 }), LOOPS);
     ink.addBinding(params, 'inkColor', { label: 'Ink Color' });
+    ink.addBinding(params, 'inkCull', { label: 'Cull (keep 1/N)', min: 1, max: 50, step: 1 });
     tag(ink.addBinding(params, 'inkSizeMin', { label: 'Size Min', min: 0, max: 600, step: 1 }), LOOPS);
     tag(ink.addBinding(params, 'inkSizeMax', { label: 'Size Max', min: 10, max: 800, step: 1 }), LOOPS);
     tag(
@@ -1126,8 +1131,10 @@ export function Composition() {
         let minD = Infinity;
         let maxD = -Infinity;
 
+        const cull = Math.max(1, p.inkCull);
         for (const src of waterSources) {
           for (let k = 0; k < rings; k++) {
+            if (k % cull !== 0) continue; // keep every Nth ring
             const ringR = (k + frac) * spacing;
             if (ringR < 0.5 || ringR > maxR) continue;
             const tNorm = ringR / maxR;
@@ -1202,6 +1209,7 @@ export function Composition() {
         const x0 = -span / 2;
         const nSamp = Math.max(2, p.inkVertices);
         const strands = Math.max(1, p.inkRibbonStrands);
+        const ribbonCull = Math.max(1, p.inkCull);
         const halfW = p.inkRibbonWidth / 2;
         const amp = p.inkRibbonAmplitude;
         const waveK = span > 0 ? (p.inkRibbonWaveFreq * Math.PI * 2) / span : 0;
@@ -1282,6 +1290,7 @@ export function Composition() {
           }
 
           for (let st = 0; st < strands; st++) {
+            if (st % ribbonCull !== 0) continue; // keep every Nth strand
             const v = strands === 1 ? 0 : (st / (strands - 1)) * 2 - 1; // -1..1 across width
             const pts = new Array(nSamp);
             let mid = 0;
@@ -1374,7 +1383,9 @@ export function Composition() {
         unitSin[i] = Math.sin(t);
       }
 
+      const loopCull = Math.max(1, p.inkCull);
       for (let li = 0; li < loops.length; li++) {
+        if (li % loopCull !== 0) continue; // keep every Nth loop
         const L = loops[li];
         // 1. Build the loop's vertex polygon (closed ellipse) in shape space.
         const verts = new Array(nVerts);
@@ -1667,6 +1678,7 @@ export function Composition() {
     p.renderMode,
     loops,
     p.inkColor,
+    p.inkCull,
     p.inkAlpha,
     p.inkLineWidth,
     p.inkLineWidthVariance,
