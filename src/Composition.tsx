@@ -95,131 +95,11 @@ function mulberry32(seed: number) {
   };
 }
 
-/**
- * Separable box blur over a scalar grid (in place via a scratch copy). Smooths
- * the density field so contours come out as clean continuous curves instead of
- * speckled fragments. Repeated a few times approximates a Gaussian.
- */
-function blurField(d: Float32Array, gw: number, gh: number, radius: number, passes = 2): void {
-  if (radius < 1) return;
-  const r = Math.round(radius);
-  const tmp = new Float32Array(d.length);
-  for (let pass = 0; pass < passes; pass++) {
-    // horizontal
-    for (let y = 0; y < gh; y++) {
-      const row = y * gw;
-      for (let x = 0; x < gw; x++) {
-        let sum = 0;
-        let n = 0;
-        for (let k = -r; k <= r; k++) {
-          const xx = x + k;
-          if (xx >= 0 && xx < gw) {
-            sum += d[row + xx];
-            n++;
-          }
-        }
-        tmp[row + x] = sum / n;
-      }
-    }
-    // vertical
-    for (let x = 0; x < gw; x++) {
-      for (let y = 0; y < gh; y++) {
-        let sum = 0;
-        let n = 0;
-        for (let k = -r; k <= r; k++) {
-          const yy = y + k;
-          if (yy >= 0 && yy < gh) {
-            sum += tmp[yy * gw + x];
-            n++;
-          }
-        }
-        d[y * gw + x] = sum / n;
-      }
-    }
-  }
-}
-
-/**
- * Marching squares: extract iso-contour line segments from a scalar field at
- * `thr`. Returns segments as [x1, y1, x2, y2] in grid coordinates (with linear
- * edge interpolation). Used to trace the outline of the densest regions of a
- * composition's accumulated line-coverage.
- */
-function marchingSquares(d: Float32Array, gw: number, gh: number, thr: number): number[] {
-  const segs: number[] = [];
-  const at = (x: number, y: number) => d[y * gw + x];
-  for (let y = 0; y < gh - 1; y++) {
-    for (let x = 0; x < gw - 1; x++) {
-      const tl = at(x, y);
-      const tr = at(x + 1, y);
-      const br = at(x + 1, y + 1);
-      const bl = at(x, y + 1);
-      let c = 0;
-      if (tl > thr) c |= 8;
-      if (tr > thr) c |= 4;
-      if (br > thr) c |= 2;
-      if (bl > thr) c |= 1;
-      if (c === 0 || c === 15) continue;
-      // Interpolated crossing points on each edge.
-      const top = () => x + (thr - tl) / (tr - tl);
-      const bot = () => x + (thr - bl) / (br - bl);
-      const lft = () => y + (thr - tl) / (bl - tl);
-      const rgt = () => y + (thr - tr) / (br - tr);
-      const push = (x1: number, y1: number, x2: number, y2: number) =>
-        segs.push(x1, y1, x2, y2);
-      switch (c) {
-        case 1:
-        case 14:
-          push(x, lft(), bot(), y + 1);
-          break;
-        case 2:
-        case 13:
-          push(bot(), y + 1, x + 1, rgt());
-          break;
-        case 3:
-        case 12:
-          push(x, lft(), x + 1, rgt());
-          break;
-        case 4:
-        case 11:
-          push(top(), y, x + 1, rgt());
-          break;
-        case 6:
-        case 9:
-          push(top(), y, bot(), y + 1);
-          break;
-        case 7:
-        case 8:
-          push(x, lft(), top(), y);
-          break;
-        case 5:
-          push(x, lft(), top(), y);
-          push(bot(), y + 1, x + 1, rgt());
-          break;
-        case 10:
-          push(top(), y, x + 1, rgt());
-          push(x, lft(), bot(), y + 1);
-          break;
-      }
-    }
-  }
-  return segs;
-}
-
 const DEFAULTS = {
   // Top-level rendering pipeline. 'dots' runs the existing dot system;
   // 'ink' bypasses dots and renders overlapping shape-clipped loop strokes
   // that get multiply-blended into a watercolor / ink-in-water look.
   renderMode: 'dots' as 'dots' | 'ink',
-  // Outline filter — replaces the composition with contour lines tracing the
-  // regions where strokes overlap most (a density field traced by marching
-  // squares). Collapses the dense cloud to one or a few clean curves.
-  outlineEnabled: false,
-  outlineThreshold: 0.28, // density level (fraction of peak) the outline traces
-  outlineLevels: 2, // nested contour levels (1 = just the densest core)
-  outlineSmooth: 4, // density smoothing — higher = fewer, cleaner closed curves
-  outlineWidth: 2,
-  outlineColor: '#c83a8d',
   generator: 'phyllotaxis' as GeneratorKind,
   // composition
   shape: 'heart' as ShapeKind,
@@ -829,21 +709,6 @@ export function Composition() {
     rib.addBinding(params, 'inkRibbonAnimate', { label: 'Animate (L→R)' });
     rib.addBinding(params, 'inkRibbonSpeed', { label: 'Speed', min: 0, max: 5, step: 0.01 });
 
-    // ──────────── OUTLINE (shared) ────────────
-    // Trace the densest regions of the composition as contour strokes.
-    const outline = pane.addFolder({ title: 'Outline', expanded: false });
-    outline.addBinding(params, 'outlineEnabled', { label: 'Enabled' });
-    outline.addBinding(params, 'outlineThreshold', {
-      label: 'Threshold',
-      min: 0.02,
-      max: 0.95,
-      step: 0.01,
-    });
-    outline.addBinding(params, 'outlineLevels', { label: 'Levels', min: 1, max: 8, step: 1 });
-    outline.addBinding(params, 'outlineSmooth', { label: 'Smoothing', min: 0, max: 16, step: 1 });
-    outline.addBinding(params, 'outlineWidth', { label: 'Line Width', min: 0.3, max: 8, step: 0.1 });
-    outline.addBinding(params, 'outlineColor', { label: 'Color' });
-
     // ──────────── EXPORT (shared) ────────────
     // Absolute output resolutions — dpr-independent, so what you pick is what
     // you get regardless of screen or window size.
@@ -1152,83 +1017,11 @@ export function Composition() {
 
     // All drawing lives in paint() so PNG export can replay it onto an
     // offscreen canvas. ctx/size are params (shadow the outer canvas refs);
-    // the functions are hoisted, so the call + ref assignment above them work.
+    // the function is hoisted, so the call + ref assignment above it work.
     drawSceneRef.current = paint;
     paint(ctx, size);
 
-    // paint() = the public entry. Either draws the composition directly, or —
-    // when the Outline filter is on — renders it to a density buffer and traces
-    // the densest regions as contour strokes instead.
     function paint(ctx: CanvasRenderingContext2D, size: number) {
-      if (!p.outlineEnabled) {
-        drawComposition(ctx, size);
-        return;
-      }
-      // 1. Render the composition into an offscreen buffer; density at each
-      //    point = how far the pixel deviates from the background (monotonic
-      //    with how many strokes overlap there, for any blend mode).
-      const DR = 640;
-      const off = document.createElement('canvas');
-      off.width = DR;
-      off.height = DR;
-      const octx = off.getContext('2d', { willReadFrequently: true });
-      if (!octx) {
-        drawComposition(ctx, size);
-        return;
-      }
-      octx.setTransform(DR / size, 0, 0, DR / size, 0, 0);
-      drawComposition(octx, size);
-      const img = octx.getImageData(0, 0, DR, DR).data;
-      const bg = hexToRgb(p.background);
-
-      // 2. Build a coarse density grid (every `step` px) and find the peak.
-      const step = 2;
-      const gw = Math.floor(DR / step);
-      const gh = gw;
-      const dens = new Float32Array(gw * gh);
-      let maxd = 0;
-      for (let gy = 0; gy < gh; gy++) {
-        for (let gx = 0; gx < gw; gx++) {
-          const idx = (gy * step * DR + gx * step) * 4;
-          const dr = img[idx] - bg.r;
-          const dg = img[idx + 1] - bg.g;
-          const db = img[idx + 2] - bg.b;
-          const v = Math.sqrt(dr * dr + dg * dg + db * db);
-          dens[gy * gw + gx] = v;
-        }
-      }
-
-      // 2b. Smooth so contours are clean closed curves, not speckle. Recompute
-      //     the peak AFTER blurring so the threshold maps to the smoothed field.
-      blurField(dens, gw, gh, p.outlineSmooth);
-      for (let i = 0; i < dens.length; i++) if (dens[i] > maxd) maxd = dens[i];
-
-      // 3. Trace contour(s) at threshold levels and stroke them.
-      ctx.fillStyle = p.background;
-      ctx.fillRect(0, 0, size, size);
-      if (maxd > 0) {
-        const cell = (size / DR) * step; // grid → canvas scale
-        ctx.strokeStyle = p.outlineColor;
-        ctx.lineWidth = p.outlineWidth;
-        ctx.lineJoin = 'round';
-        ctx.lineCap = 'round';
-        const levels = Math.max(1, p.outlineLevels);
-        for (let li = 0; li < levels; li++) {
-          // Level 0 = the outermost (Threshold); higher levels trace tighter
-          // inner cores up toward the peak density.
-          const t = p.outlineThreshold + (li / levels) * (1 - p.outlineThreshold);
-          const segs = marchingSquares(dens, gw, gh, t * maxd);
-          ctx.beginPath();
-          for (let i = 0; i < segs.length; i += 4) {
-            ctx.moveTo(segs[i] * cell, segs[i + 1] * cell);
-            ctx.lineTo(segs[i + 2] * cell, segs[i + 3] * cell);
-          }
-          ctx.stroke();
-        }
-      }
-    }
-
-    function drawComposition(ctx: CanvasRenderingContext2D, size: number) {
     ctx.fillStyle = p.background;
     ctx.fillRect(0, 0, size, size);
 
@@ -1859,12 +1652,6 @@ export function Composition() {
     p.depthFade,
     p.crestGlow,
     p.mode,
-    p.outlineEnabled,
-    p.outlineThreshold,
-    p.outlineLevels,
-    p.outlineSmooth,
-    p.outlineWidth,
-    p.outlineColor,
     p.troughColor,
     p.midColor,
     p.crestColor,
