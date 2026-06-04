@@ -1189,24 +1189,29 @@ export function Composition() {
             const dx = x - d.x;
             const dy = y - d.y;
             const theta = Math.atan2(dy, dx);
-            let dist = Math.sqrt(dx * dx + dy * dy);
+            const dist0 = Math.sqrt(dx * dx + dy * dy); // TRUE distance (stable)
             // Wobble: perturb the ring RADIUS as a smooth function of angle (and
-            // a little of radius) so the bands undulate in and out organically
-            // while the spiral/grid stay readable. Animates with phase.
+            // a little of radius) so the bands undulate organically. This only
+            // shifts the wave phase/attenuation — NOT the bend normalisation —
+            // so it can't pull the radius to zero and blow up the bend.
+            let dist = dist0;
             if (wobble > 0) {
               dist +=
                 wobble *
-                (Math.sin(theta * wobbleLobes + dist * 0.012 - phase) +
-                  0.5 * Math.sin(theta * wobbleLobes * 1.9 - dist * 0.017 + phase * 1.2));
+                (Math.sin(theta * wobbleLobes + dist0 * 0.012 - phase) +
+                  0.5 * Math.sin(theta * wobbleLobes * 1.9 - dist0 * 0.017 + phase * 1.2));
+              if (dist < 0) dist = 0;
             }
-            const att = falloff > 0 ? Math.pow(Math.max(0, 1 - dist / maxR), falloff) : 1;
+            const att = falloff > 0 ? Math.pow(Math.max(0, Math.min(1, 1 - dist / maxR)), falloff) : 1;
             if (att <= 0) continue;
             // Spiral: add an angular term so wavefronts wind around the drop.
             const ang = spiral !== 0 ? spiral * theta : 0;
             const wave = Math.sin(dist * ringK + ang - phase + d.ph);
             z += amp * wave * att;
-            if (bend > 0 && dist > 0.001) {
-              const b = (bend * wave * att) / dist;
+            // Bend normalises by the TRUE distance so the unit direction is
+            // always valid — magnitude is bounded by `bend`, no singularity.
+            if (bend > 0 && dist0 > 0.001) {
+              const b = (bend * wave * att) / dist0;
               bx += dx * b;
               by += dy * b;
             }
