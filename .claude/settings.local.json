@@ -37,7 +37,8 @@
       "Bash(sed -n '405,408p' src/Composition.tsx)",
       "Bash(awk 'NR>=1005 && NR<=1700 && /\\\\bsize\\\\b/' src/Composition.tsx)",
       "Bash(grep -n \"const \\\\[, force\\\\] = useReducer\\\\|const \\\\[phase, setPhase\\\\]\\\\|p.background,$\" src/Composition.tsx)",
-      "Bash(grep -n \"phase,$\" src/Composition.tsx)"
+      "Bash(grep -n \"phase,$\" src/Composition.tsx)",
+      "Bash(grep -n \"p.inkRibbonSpan,$\" src/Composition.tsx)"
     ]
   }
 }

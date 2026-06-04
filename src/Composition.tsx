@@ -236,7 +236,8 @@ const DEFAULTS = {
   inkRibbonWaveFreq: 1, // vertical wave cycles across the span
   inkRibbonTwist: 0.6, // mild twist (crank up for the twirling-streamer look)
   inkRibbonStrands: 110, // dense strands = the ripple contour lines
-  inkRibbonSpan: 1.2, // horizontal length as a fraction of 2·radius
+  inkRibbonSpan: 1.2, // total horizontal field as a fraction of 2·radius
+  inkRibbonLength: 1, // each ribbon's length as a fraction of the span (1 = full width)
   inkRibbonSpread: 0.3, // keep the few ribbons near centre so they overlap
   inkRibbonAnimate: false,
   inkRibbonSpeed: 0.6,
@@ -636,6 +637,7 @@ export function Composition() {
     rib.addBinding(params, 'inkRibbonWaveFreq', { label: 'Wave Freq', min: 0, max: 8, step: 0.05 });
     rib.addBinding(params, 'inkRibbonTwist', { label: 'Twist', min: 0, max: 10, step: 0.05 });
     rib.addBinding(params, 'inkRibbonSpan', { label: 'Span', min: 0.5, max: 2, step: 0.01 });
+    rib.addBinding(params, 'inkRibbonLength', { label: 'Length', min: 0.05, max: 1, step: 0.01 });
     rib.addBinding(params, 'inkRibbonSpread', { label: 'Spread', min: 0, max: 1, step: 0.01 });
     const ribDrop = rib.addFolder({ title: 'Droplet' });
     ribDrop.addBinding(params, 'inkRibbonRippleAmp', { label: 'Droplet Amp', min: 0, max: 80, step: 0.5 });
@@ -1345,7 +1347,10 @@ export function Composition() {
       if (p.inkStyle === 'ribbons') {
         const rand = mulberry32(p.inkSeed);
         const span = p.radius * 2 * p.inkRibbonSpan;
-        const x0 = -span / 2;
+        const ribLen = span * p.inkRibbonLength; // each ribbon's actual length
+        // Scatter each shorter ribbon's start across the span (own RNG so it
+        // doesn't disturb the baseY/colour seed). At Length 1 this is a no-op.
+        const xRand = mulberry32(p.inkSeed ^ 0x3c);
         const nSamp = Math.max(2, p.inkVertices);
         const strands = Math.max(1, p.inkRibbonStrands);
         const ribbonCull = Math.max(1, p.inkCull);
@@ -1400,6 +1405,8 @@ export function Composition() {
           const phaseOff = rand() * Math.PI * 2;
           const dh = (rand() - 0.5) * 2 * p.inkHueShift;
           const dl = (rand() - 0.5) * 2 * p.inkLightnessShift;
+          // Start x for this ribbon: scattered within the span (no-op at Length 1).
+          const xStart = -span / 2 + xRand() * (span - ribLen);
 
           // Per-ribbon precompute: the centerline (x, cy) shared by all strands,
           // and — for ribbon-surface mode — the arc length ALONG that centerline
@@ -1409,7 +1416,7 @@ export function Composition() {
           const xArr = new Float64Array(nSamp);
           const cyArr = new Float64Array(nSamp);
           for (let i = 0; i < nSamp; i++) {
-            const x = x0 + (i / (nSamp - 1)) * span;
+            const x = xStart + (i / (nSamp - 1)) * ribLen;
             xArr[i] = x;
             cyArr[i] = baseY + amp * Math.sin(x * waveK - phase + phaseOff);
           }
@@ -1844,6 +1851,7 @@ export function Composition() {
     p.inkRibbonWaveFreq,
     p.inkRibbonTwist,
     p.inkRibbonSpan,
+    p.inkRibbonLength,
     p.inkRibbonSpread,
     p.inkRibbonRippleAmp,
     p.inkRibbonRippleFreq,
