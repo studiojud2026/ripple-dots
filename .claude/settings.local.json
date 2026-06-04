@@ -25,7 +25,8 @@
       "Bash(grep -n \"drawSceneRef.current = paint;\\\\|function paint\\(ctx: CanvasRenderingContext2D, size: number\\) {\" src/Composition.tsx)",
       "Bash(xargs kill -9)",
       "Bash(git revert *)",
-      "Bash(git stash *)"
+      "Bash(git stash *)",
+      "Bash(grep -n \"options: { Loops: 'loops', Ribbons: 'ribbons', Ripples: 'ripples' },\" src/Composition.tsx)"
     ]
   }
 }

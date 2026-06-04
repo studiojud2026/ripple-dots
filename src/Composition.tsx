@@ -190,7 +190,7 @@ const DEFAULTS = {
   // 'ribbons' = wide twirling horizontal bands; 'ripples' = concentric water
   // rings from drop sources placed on the math path, with true wave
   // superposition between sources.
-  inkStyle: 'loops' as 'loops' | 'ribbons' | 'ripples',
+  inkStyle: 'loops' as 'loops' | 'ribbons' | 'ripples' | 'plane',
   // Ripples (water) style. Drop sources are sampled from the Placement path;
   // each emits expanding concentric rings that ride on the combined wave
   // height field of all sources (superposition), so where two ripple sets
@@ -204,6 +204,20 @@ const DEFAULTS = {
   inkWaterBend: 9, // in-plane displacement from crossing waves (the interference bend)
   inkWaterAnimate: false,
   inkWaterSpeed: 0.5,
+  // Plane style — a flat grid surface facing the camera. Droplets land on it
+  // and emanate concentric ripples that displace the grid both in-plane (so
+  // the rings read head-on) and in Z (real relief once the camera tilts).
+  inkPlaneLines: 46, // grid lines per axis
+  inkPlaneSize: 1.3, // plane half-extent as a fraction of radius
+  inkPlaneGrid: 'both' as 'both' | 'rows',
+  inkPlaneDrops: 3,
+  inkPlaneSpread: 0.6, // how far drops scatter from centre
+  inkPlaneRingFreq: 6, // rings from a drop out to the plane edge
+  inkPlaneAmp: 26, // Z wave height (relief under tilt)
+  inkPlaneBend: 10, // in-plane displacement (makes rings visible facing camera)
+  inkPlaneFalloff: 1, // droplet energy fade outward
+  inkPlaneAnimate: false,
+  inkPlaneSpeed: 0.6,
   // Ribbon style. Each ribbon is a horizontal band rendered as `strands`
   // parallel lines; the band twists about its length axis (into Z) so it
   // reads as a twirling streamer, and the wave phase animates the flow.
@@ -501,13 +515,14 @@ export function Composition() {
     const LOOPS = ['loops'];
     const RIBBONS = ['ribbons'];
     const RIPPLES = ['ripples'];
+    const PLANE = ['plane'];
     const LOOPS_RIPPLES = ['loops', 'ripples']; // Placement positions both
 
     const ink = pane.addFolder({ title: 'Ink' });
     inkBlades.push(ink);
     ink.addBinding(params, 'inkStyle', {
       label: 'Style',
-      options: { Loops: 'loops', Ribbons: 'ribbons', Ripples: 'ripples' },
+      options: { Loops: 'loops', Ribbons: 'ribbons', Ripples: 'ripples', Plane: 'plane' },
     });
     tag(ink.addBinding(params, 'inkCount', { label: 'Count', min: 1, max: 2500, step: 1 }), LOOPS);
     ink.addBinding(params, 'inkColor', { label: 'Ink Color' });
@@ -668,6 +683,24 @@ export function Composition() {
     water.addBinding(params, 'inkWaterAnimate', { label: 'Animate (expand)' });
     water.addBinding(params, 'inkWaterSpeed', { label: 'Speed', min: 0, max: 5, step: 0.01 });
 
+    // ──── Plane sub-folder (ink style = plane) ────
+    const plane = ink.addFolder({ title: 'Plane', expanded: true });
+    tag(plane, PLANE);
+    plane.addBinding(params, 'inkPlaneLines', { label: 'Grid Lines', min: 4, max: 160, step: 1 });
+    plane.addBinding(params, 'inkPlaneSize', { label: 'Plane Size', min: 0.4, max: 2, step: 0.01 });
+    plane.addBinding(params, 'inkPlaneGrid', {
+      label: 'Grid',
+      options: { 'Rows + Cols': 'both', 'Rows only': 'rows' },
+    });
+    plane.addBinding(params, 'inkPlaneDrops', { label: 'Droplets', min: 1, max: 12, step: 1 });
+    plane.addBinding(params, 'inkPlaneSpread', { label: 'Drop Spread', min: 0, max: 1, step: 0.01 });
+    plane.addBinding(params, 'inkPlaneRingFreq', { label: 'Ring Freq', min: 0.5, max: 20, step: 0.1 });
+    plane.addBinding(params, 'inkPlaneAmp', { label: 'Wave Height', min: 0, max: 120, step: 1 });
+    plane.addBinding(params, 'inkPlaneBend', { label: 'Surface Bend', min: 0, max: 40, step: 0.5 });
+    plane.addBinding(params, 'inkPlaneFalloff', { label: 'Falloff', min: 0, max: 4, step: 0.05 });
+    plane.addBinding(params, 'inkPlaneAnimate', { label: 'Animate (expand)' });
+    plane.addBinding(params, 'inkPlaneSpeed', { label: 'Speed', min: 0, max: 5, step: 0.01 });
+
     // ──── Ribbon sub-folder (ink style = ribbons) ────
     const rib = ink.addFolder({ title: 'Ribbons', expanded: true });
     tag(rib, RIBBONS);
@@ -762,6 +795,9 @@ export function Composition() {
     } else if (p.inkStyle === 'ripples') {
       animate = p.inkWaterAnimate;
       speed = p.inkWaterSpeed;
+    } else if (p.inkStyle === 'plane') {
+      animate = p.inkPlaneAnimate;
+      speed = p.inkPlaneSpeed;
     } else {
       animate = p.inkRippleAnimate;
       speed = p.inkRippleSpeed;
@@ -1088,6 +1124,120 @@ export function Composition() {
       ctx.lineCap = 'round';
       ctx.lineJoin = 'round';
       if (p.inkBlur > 0) ctx.filter = `blur(${p.inkBlur}px)`;
+
+      // ──────────── PLANE STYLE ────────────
+      // A flat grid surface facing the camera. Droplets land on it and emanate
+      // concentric ripples that displace the grid in-plane (rings read head-on)
+      // and in Z (relief once the camera tilts). The grid lines are the strokes.
+      if (p.inkStyle === 'plane') {
+        const project = (x: number, y: number, z: number) => {
+          const sx = x * cosS - y * sinS;
+          const sy = x * sinS + y * cosS;
+          const py3 = sy * cosP - z * sinP;
+          const pz3 = sy * sinP + z * cosP;
+          const scale = focal / Math.max(1, focal + pz3);
+          return { x: sx * scale, y: py3 * scale, depth: pz3 };
+        };
+
+        const half = p.radius * p.inkPlaneSize;
+        const lines = Math.max(1, p.inkPlaneLines);
+        const nSamp = Math.max(2, p.inkVertices);
+        const ringK = half > 0 ? (p.inkPlaneRingFreq * Math.PI * 2) / half : 0;
+        const amp = p.inkPlaneAmp;
+        const bend = p.inkPlaneBend;
+        const falloff = p.inkPlaneFalloff;
+        const maxR = half * 1.5;
+        const fade = p.inkDepthFade;
+        const cull = Math.max(1, p.inkCull);
+
+        // Drop points on the plane — drop 0 centred, extras seeded.
+        const dr = mulberry32(p.inkSeed ^ 0x2f);
+        const drops = [{ x: 0, y: 0, ph: 0 }];
+        for (let j = 1; j < p.inkPlaneDrops; j++) {
+          drops.push({
+            x: (dr() * 2 - 1) * half * p.inkPlaneSpread,
+            y: (dr() * 2 - 1) * half * p.inkPlaneSpread,
+            ph: dr() * Math.PI * 2,
+          });
+        }
+
+        // Per grid point: sum each drop's expanding/fading wave into Z relief
+        // plus an in-plane radial push so the rings show when viewed head-on.
+        const surface = (x: number, y: number) => {
+          let z = 0;
+          let bx = 0;
+          let by = 0;
+          for (const d of drops) {
+            const dx = x - d.x;
+            const dy = y - d.y;
+            const dist = Math.sqrt(dx * dx + dy * dy);
+            const att = falloff > 0 ? Math.pow(Math.max(0, 1 - dist / maxR), falloff) : 1;
+            if (att <= 0) continue;
+            const wave = Math.sin(dist * ringK - phase + d.ph);
+            z += amp * wave * att;
+            if (bend > 0 && dist > 0.001) {
+              const b = (bend * wave * att) / dist;
+              bx += dx * b;
+              by += dy * b;
+            }
+          }
+          return project(x + bx, y + by, z);
+        };
+
+        const lineRand = mulberry32(p.inkSeed ^ 0x7c);
+        type GLine = { pts: { x: number; y: number }[]; depth: number; dh: number; dl: number };
+        const built: GLine[] = [];
+        let minD = Infinity;
+        let maxD = -Infinity;
+        const buildAxis = (rows: boolean) => {
+          for (let li = 0; li < lines; li++) {
+            if (li % cull !== 0) continue;
+            const t = lines === 1 ? 0.5 : li / (lines - 1);
+            const fixed = -half + t * 2 * half;
+            const dh = (lineRand() - 0.5) * 2 * p.inkHueShift;
+            const dl = (lineRand() - 0.5) * 2 * p.inkLightnessShift;
+            const pts = new Array(nSamp);
+            let dsum = 0;
+            for (let i = 0; i < nSamp; i++) {
+              const u = nSamp === 1 ? 0 : i / (nSamp - 1);
+              const moving = -half + u * 2 * half;
+              const pr = rows ? surface(moving, fixed) : surface(fixed, moving);
+              pts[i] = pr;
+              dsum += pr.depth;
+            }
+            const dm = dsum / nSamp;
+            if (dm < minD) minD = dm;
+            if (dm > maxD) maxD = dm;
+            built.push({ pts, depth: dm, dh, dl });
+          }
+        };
+        buildAxis(true);
+        if (p.inkPlaneGrid === 'both') buildAxis(false);
+
+        const dRange = maxD - minD || 1;
+        ctx.lineWidth = p.inkLineWidth;
+        for (const b of built) {
+          const fog = fade > 0 ? 1 - fade * ((b.depth - minD) / dRange) : 1;
+          ctx.strokeStyle = hslString(
+            baseHsl.h + b.dh,
+            baseHsl.s,
+            baseHsl.l + b.dl,
+            p.inkAlpha * fog,
+          );
+          ctx.beginPath();
+          for (let i = 0; i < b.pts.length; i++) {
+            const pt = b.pts[i];
+            if (i === 0) ctx.moveTo(pt.x, pt.y);
+            else ctx.lineTo(pt.x, pt.y);
+          }
+          ctx.stroke();
+        }
+
+        ctx.filter = 'none';
+        ctx.globalCompositeOperation = 'source-over';
+        ctx.restore();
+        return;
+      }
 
       // ──────────── RIPPLES (WATER) STYLE ────────────
       // Concentric rings from each drop source, expanding outward. Every ring
@@ -1712,6 +1862,15 @@ export function Composition() {
     p.inkRibbonRippleSource,
     p.inkRibbonDropCount,
     p.inkRibbonDropSpread,
+    p.inkPlaneLines,
+    p.inkPlaneSize,
+    p.inkPlaneGrid,
+    p.inkPlaneDrops,
+    p.inkPlaneSpread,
+    p.inkPlaneRingFreq,
+    p.inkPlaneAmp,
+    p.inkPlaneBend,
+    p.inkPlaneFalloff,
     waterSources,
     p.inkWaterRings,
     p.inkWaterSpacing,
