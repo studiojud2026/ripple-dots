@@ -1107,7 +1107,10 @@ export function Composition() {
       const loopDepth = new Float64Array(loops.length);
       let minDepth = Infinity;
       let maxDepth = -Infinity;
-      if (cameraActive && (depthFade > 0 || p.inkColorMode === 'gradient')) {
+      // Run when fog needs it (camera active) OR gradient is on — gradient
+      // needs a valid depth range even on a flat view, else t = NaN and nothing
+      // draws.
+      if ((cameraActive && depthFade > 0) || p.inkColorMode === 'gradient') {
         for (let li = 0; li < loops.length; li++) {
           const L = loops[li];
           const sy = L.cx * sinS + L.cy * cosS;
@@ -1117,7 +1120,8 @@ export function Composition() {
           if (d > maxDepth) maxDepth = d;
         }
       }
-      const depthRange = maxDepth - minDepth || 1;
+      // Guard against a degenerate/empty range (flat view → all equal depths).
+      const depthRange = maxDepth > minDepth ? maxDepth - minDepth : 1;
       const fogActive = depthFade > 0 && cameraActive;
 
       // Shape DEFORMS the ink field instead of masking it. Build a polar
@@ -1144,7 +1148,7 @@ export function Composition() {
       const gC = hexToRgb(p.inkGradColor3);
       const gStops = p.inkGradStops;
       const gradColor = (t: number, alpha: number) => {
-        const tt = t < 0 ? 0 : t > 1 ? 1 : t;
+        const tt = !Number.isFinite(t) ? 0 : t < 0 ? 0 : t > 1 ? 1 : t;
         const c =
           gStops <= 2
             ? lerpRgb(gA, gB, tt)
