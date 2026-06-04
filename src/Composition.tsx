@@ -717,10 +717,24 @@ export function Composition() {
   }, []);
 
   const p = paramsRef.current;
+  const prevModeRef = useRef(p.renderMode);
 
   // Toggle panel visibility when Render Mode flips. Runs after the mount
   // effect has populated the refs.
   useEffect(() => {
+    // Entering ink mode: start from a clean ink-friendly state — Light theme
+    // (white bg + multiply) and a Circle canvas — rather than the dark/heart
+    // dot defaults. Only on the dots→ink transition so it doesn't clobber
+    // tweaks made within an ink session.
+    if (p.renderMode === 'ink' && prevModeRef.current !== 'ink') {
+      p.background = '#ffffff';
+      p.inkBlend = 'multiply';
+      p.shape = 'circle';
+      paneRef.current?.refresh();
+      force();
+    }
+    prevModeRef.current = p.renderMode;
+
     const inDots = p.renderMode === 'dots';
     dotBladesRef.current.forEach((b) => (b.hidden = !inDots));
     inkBladesRef.current.forEach((b) => (b.hidden = inDots));
