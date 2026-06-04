@@ -564,14 +564,6 @@ export function Composition() {
       force();
     });
 
-    // ──── Camera (shared by all ink styles) ────
-    const cam = ink.addFolder({ title: 'Camera' });
-    cam.addBinding(params, 'rotation', { label: 'Rotation', min: -180, max: 180, step: 1 });
-    cam.addBinding(params, 'inkTilt', { label: 'Tilt', min: -89, max: 89, step: 1 });
-    cam.addBinding(params, 'inkPerspective', { label: 'Perspective', min: 200, max: 4000, step: 10 });
-    cam.addBinding(params, 'inkDepthSpread', { label: 'Depth Spread', min: 0, max: 1.5, step: 0.01 });
-    cam.addBinding(params, 'inkDepthFade', { label: 'Depth Fade', min: 0, max: 1, step: 0.01 });
-
     // ──── Placement (loops + ripples) ────
     const place = ink.addFolder({ title: 'Placement' });
     tag(place, LOOPS_RIPPLES);
@@ -689,6 +681,17 @@ export function Composition() {
     planePat.addBinding(params, 'inkPlaneSpiral', { label: 'Spiral', min: -6, max: 6, step: 0.05 });
     planePat.addBinding(params, 'inkPlaneWobble', { label: 'Wobble', min: 0, max: 200, step: 1 });
     planePat.addBinding(params, 'inkPlaneWobbleScale', { label: 'Wobble Scale', min: 0.2, max: 8, step: 0.05 });
+
+    // ──────────── CAMERA (ink, top level) ────────────
+    // Top-level folder between Ink and Export. Ink-only, so it hides in Dots
+    // mode (Dots has its own camera controls in Composition).
+    const cam = pane.addFolder({ title: 'Camera' });
+    inkBlades.push(cam);
+    cam.addBinding(params, 'rotation', { label: 'Rotation', min: -180, max: 180, step: 1 });
+    cam.addBinding(params, 'inkTilt', { label: 'Tilt', min: -89, max: 89, step: 1 });
+    cam.addBinding(params, 'inkPerspective', { label: 'Perspective', min: 200, max: 4000, step: 10 });
+    cam.addBinding(params, 'inkDepthSpread', { label: 'Depth Spread', min: 0, max: 1.5, step: 0.01 });
+    cam.addBinding(params, 'inkDepthFade', { label: 'Depth Fade', min: 0, max: 1, step: 0.01 });
 
     // ──────────── EXPORT (shared) ────────────
     const exp = pane.addFolder({ title: 'Export', expanded: false });
