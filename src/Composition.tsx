@@ -221,6 +221,7 @@ const DEFAULTS = {
   inkPlaneLines: 46, // grid lines per axis
   inkPlaneSize: 1.3, // plane half-extent as a fraction of radius
   inkPlaneGrid: 'both' as 'both' | 'rows',
+  inkPlaneClip: false, // clip the plane to the Canvas shape (incl. custom SVG)
   inkPlaneDrops: 3,
   inkPlaneSpread: 0.6, // how far drops scatter from centre
   inkPlaneRingFreq: 6, // rings from a drop out to the plane edge
@@ -708,6 +709,7 @@ export function Composition() {
       label: 'Grid',
       options: { 'Rows + Cols': 'both', 'Rows only': 'rows' },
     });
+    plane.addBinding(params, 'inkPlaneClip', { label: 'Clip to Shape' });
     const planeDrop = plane.addFolder({ title: 'Droplet' });
     planeDrop.addBinding(params, 'inkPlaneDrops', { label: 'Droplets', min: 1, max: 12, step: 1 });
     planeDrop.addBinding(params, 'inkPlaneSpread', { label: 'Drop Spread', min: 0, max: 1, step: 0.01 });
@@ -1248,6 +1250,16 @@ export function Composition() {
           return project(x + bx, y + by, z);
         };
 
+        // Clip the plane to the active shape (incl. custom SVG) in plane-space,
+        // so the rippling surface itself takes the silhouette and still tilts in
+        // 3D. Hit-test the un-displaced grid point; lines break into spans where
+        // they cross the outline.
+        const clipToShape = p.inkPlaneClip && shapeKind !== 'image';
+        const clipPath = clipToShape ? buildShape(shapeKind, p.radius, p.customPath) : null;
+        const hitCtx = clipToShape ? document.createElement('canvas').getContext('2d') : null;
+        const inside = (x: number, y: number) =>
+          !clipPath || !hitCtx || hitCtx.isPointInPath(clipPath, x, y);
+
         const lineRand = mulberry32(p.inkSeed ^ 0x7c);
         type GLine = { pts: { x: number; y: number }[]; depth: number; dh: number; dl: number };
         const built: GLine[] = [];
@@ -1260,19 +1272,33 @@ export function Composition() {
             const fixed = -half + t * 2 * half;
             const dh = (lineRand() - 0.5) * 2 * p.inkHueShift;
             const dl = (lineRand() - 0.5) * 2 * p.inkLightnessShift;
-            const pts = new Array(nSamp);
-            let dsum = 0;
+            // Accumulate runs of inside-the-shape points; flush on each gap.
+            let run: { x: number; y: number }[] = [];
+            let runDepth = 0;
+            const flush = () => {
+              if (run.length > 1) {
+                const dm = runDepth / run.length;
+                if (dm < minD) minD = dm;
+                if (dm > maxD) maxD = dm;
+                built.push({ pts: run, depth: dm, dh, dl });
+              }
+              run = [];
+              runDepth = 0;
+            };
             for (let i = 0; i < nSamp; i++) {
               const u = nSamp === 1 ? 0 : i / (nSamp - 1);
               const moving = -half + u * 2 * half;
-              const pr = rows ? surface(moving, fixed) : surface(fixed, moving);
-              pts[i] = pr;
-              dsum += pr.depth;
+              const gx = rows ? moving : fixed;
+              const gy = rows ? fixed : moving;
+              if (!inside(gx, gy)) {
+                flush();
+                continue;
+              }
+              const pr = surface(gx, gy);
+              run.push(pr);
+              runDepth += pr.depth;
             }
-            const dm = dsum / nSamp;
-            if (dm < minD) minD = dm;
-            if (dm > maxD) maxD = dm;
-            built.push({ pts, depth: dm, dh, dl });
+            flush();
           }
         };
         buildAxis(true);
@@ -1956,6 +1982,7 @@ export function Composition() {
     p.inkPlaneLines,
     p.inkPlaneSize,
     p.inkPlaneGrid,
+    p.inkPlaneClip,
     p.inkPlaneDrops,
     p.inkPlaneSpread,
     p.inkPlaneRingFreq,
