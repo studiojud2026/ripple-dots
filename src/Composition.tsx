@@ -190,6 +190,7 @@ const DEFAULTS = {
   // tilt pitches it back into the screen; perspective is the focal length.
   // Ripple wave-height (Z) becomes real relief once tilted.
   inkTilt: 0,
+  inkYaw: 0,
   inkPerspective: 900,
   // Depth. Spread offsets each loop along Z by its path progress so the
   // composition becomes a 3D stack/vortex instead of a flat disc. Fade is
@@ -726,8 +727,9 @@ export function Composition() {
     // mode (Dots has its own camera controls in Composition).
     const cam = pane.addFolder({ title: 'Camera' });
     inkBlades.push(cam);
-    cam.addBinding(params, 'rotation', { label: 'Rotation', min: -180, max: 180, step: 1 });
-    cam.addBinding(params, 'inkTilt', { label: 'Tilt', min: -89, max: 89, step: 1 });
+    cam.addBinding(params, 'rotation', { label: 'Roll (Z)', min: -180, max: 180, step: 1 });
+    cam.addBinding(params, 'inkTilt', { label: 'Pitch / Tilt (X)', min: -180, max: 180, step: 1 });
+    cam.addBinding(params, 'inkYaw', { label: 'Yaw (Y)', min: -180, max: 180, step: 1 });
     cam.addBinding(params, 'inkPerspective', { label: 'Perspective', min: 200, max: 4000, step: 10 });
     cam.addBinding(params, 'zoom', { label: 'Zoom', min: 0.1, max: 5, step: 0.01 });
     cam.addBinding(params, 'inkDepthSpread', { label: 'Depth Spread', min: 0, max: 6, step: 0.01 });
@@ -1088,18 +1090,23 @@ export function Composition() {
       // axis); tilt pitches it back around the horizontal axis; perspective
       // foreshortens. Applied per-vertex below so ripple wave-height (Z)
       // shows as real relief once tilted.
-      const spin = (p.rotation * Math.PI) / 180;
-      const cosS = Math.cos(spin);
-      const sinS = Math.sin(spin);
+      // Full 3-axis camera: roll (Z / viewing axis, in-plane spin), pitch
+      // (X axis), yaw (Y axis). Projection order: yaw → pitch → roll → divide.
+      const roll = (p.rotation * Math.PI) / 180;
+      const cosR = Math.cos(roll);
+      const sinR = Math.sin(roll);
       const pitch = (p.inkTilt * Math.PI) / 180;
       const cosP = Math.cos(pitch);
       const sinP = Math.sin(pitch);
+      const yaw = (p.inkYaw * Math.PI) / 180;
+      const cosY = Math.cos(yaw);
+      const sinY = Math.sin(yaw);
       const focal = p.inkPerspective;
       const depthSpread = p.inkDepthSpread;
       const depthFade = p.inkDepthFade;
       // Project whenever spin / tilt / depth is in play. Flat default stays a
       // no-op (and cheap) when all three are zero.
-      const cameraActive = spin !== 0 || pitch !== 0 || depthSpread > 0;
+      const cameraActive = roll !== 0 || pitch !== 0 || yaw !== 0 || depthSpread > 0;
 
       // Fog pre-pass: project each loop's center to a camera-space depth, then
       // find the range so we can fade far loops. Cheap (≤800 centers). We use
@@ -1113,8 +1120,10 @@ export function Composition() {
       if ((cameraActive && depthFade > 0) || p.inkColorMode === 'gradient') {
         for (let li = 0; li < loops.length; li++) {
           const L = loops[li];
-          const sy = L.cx * sinS + L.cy * cosS;
-          const d = sy * sinP + L.cz * cosP;
+          // Camera-space depth of the loop centre (yaw then pitch; roll doesn't
+          // change depth).
+          const zy = -L.cx * sinY + L.cz * cosY;
+          const d = L.cy * sinP + zy * cosP;
           loopDepth[li] = d;
           if (d < minDepth) minDepth = d;
           if (d > maxDepth) maxDepth = d;
@@ -1164,12 +1173,14 @@ export function Composition() {
       // and in Z (relief once the camera tilts). The grid lines are the strokes.
       if (p.inkStyle === 'plane') {
         const project = (x: number, y: number, z: number) => {
-          const sx = x * cosS - y * sinS;
-          const sy = x * sinS + y * cosS;
-          const py3 = sy * cosP - z * sinP;
-          const pz3 = sy * sinP + z * cosP;
-          const scale = focal / Math.max(1, focal + pz3);
-          return { x: sx * scale, y: py3 * scale, depth: pz3 };
+          const xy = x * cosY + z * sinY; // yaw (Y)
+          const zy = -x * sinY + z * cosY;
+          const yp = y * cosP - zy * sinP; // pitch (X)
+          const zp = y * sinP + zy * cosP;
+          const sx = xy * cosR - yp * sinR; // roll (Z, screen)
+          const sy = xy * sinR + yp * cosR;
+          const scale = focal / Math.max(1, focal + zp);
+          return { x: sx * scale, y: sy * scale, depth: zp };
         };
 
         const half = p.radius * p.inkPlaneSize;
@@ -1297,12 +1308,14 @@ export function Composition() {
       // sources' waves cross it (the interference look).
       if (p.inkStyle === 'ripples') {
         const project = (x: number, y: number, z: number) => {
-          const sx = x * cosS - y * sinS;
-          const sy = x * sinS + y * cosS;
-          const py3 = sy * cosP - z * sinP;
-          const pz3 = sy * sinP + z * cosP;
-          const scale = focal / Math.max(1, focal + pz3);
-          return { x: sx * scale, y: py3 * scale, depth: pz3 };
+          const xy = x * cosY + z * sinY; // yaw (Y)
+          const zy = -x * sinY + z * cosY;
+          const yp = y * cosP - zy * sinP; // pitch (X)
+          const zp = y * sinP + zy * cosP;
+          const sx = xy * cosR - yp * sinR; // roll (Z, screen)
+          const sy = xy * sinR + yp * cosR;
+          const scale = focal / Math.max(1, focal + zp);
+          return { x: sx * scale, y: sy * scale, depth: zp };
         };
 
         const nSamp = Math.max(8, p.inkVertices);
@@ -1447,12 +1460,14 @@ export function Composition() {
         }
 
         const project = (x: number, y: number, z: number) => {
-          const sx = x * cosS - y * sinS;
-          const sy = x * sinS + y * cosS;
-          const py3 = sy * cosP - z * sinP;
-          const pz3 = sy * sinP + z * cosP;
-          const scale = focal / Math.max(1, focal + pz3);
-          return { x: sx * scale, y: py3 * scale, depth: pz3 };
+          const xy = x * cosY + z * sinY; // yaw (Y)
+          const zy = -x * sinY + z * cosY;
+          const yp = y * cosP - zy * sinP; // pitch (X)
+          const zp = y * sinP + zy * cosP;
+          const sx = xy * cosR - yp * sinR; // roll (Z, screen)
+          const sy = xy * sinR + yp * cosR;
+          const scale = focal / Math.max(1, focal + zp);
+          return { x: sx * scale, y: sy * scale, depth: zp };
         };
 
         // Pass 1: build every strand polyline and its mid-depth for fog.
@@ -1666,13 +1681,13 @@ export function Composition() {
           // structural stacking offset (L.cz).
           for (const w of warped) {
             const vz = w.z + L.cz;
-            const sx = w.x * cosS - w.y * sinS;
-            const sy = w.x * sinS + w.y * cosS;
-            const py3 = sy * cosP - vz * sinP;
-            const pz3 = sy * sinP + vz * cosP;
-            const scale = focal / Math.max(1, focal + pz3);
-            w.x = sx * scale;
-            w.y = py3 * scale;
+            const xy = w.x * cosY + vz * sinY; // yaw (Y)
+            const zy = -w.x * sinY + vz * cosY;
+            const yp = w.y * cosP - zy * sinP; // pitch (X)
+            const zp = w.y * sinP + zy * cosP;
+            const scale = focal / Math.max(1, focal + zp);
+            w.x = (xy * cosR - yp * sinR) * scale; // roll (Z, screen)
+            w.y = (xy * sinR + yp * cosR) * scale;
           }
         }
 
@@ -1915,6 +1930,7 @@ export function Composition() {
     p.inkRippleZScale,
     p.inkShapeInfluence,
     p.inkTilt,
+    p.inkYaw,
     p.inkPerspective,
     p.inkDepthSpread,
     p.inkDepthFade,
