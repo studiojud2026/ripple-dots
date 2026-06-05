@@ -42,7 +42,8 @@
       "Bash(grep -n \"p.inkColor,$\" src/Composition.tsx)",
       "Bash(awk 'NR==1305||NR==1455{print NR\": [\"$0\"]\"}' src/Composition.tsx)",
       "Bash(grep -n \"p.inkTilt,$\" src/Composition.tsx)",
-      "Bash(grep -n \"const buildAxis = \\(rows: boolean\\) => {\\\\|buildAxis\\(true\\);\\\\|const surface = \\(x: number, y: number\\) => {\" src/Composition.tsx)"
+      "Bash(grep -n \"const buildAxis = \\(rows: boolean\\) => {\\\\|buildAxis\\(true\\);\\\\|const surface = \\(x: number, y: number\\) => {\" src/Composition.tsx)",
+      "Bash(grep -n \"p.inkShapeInfluence,$\" src/Composition.tsx)"
     ]
   }
 }

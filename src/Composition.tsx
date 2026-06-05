@@ -282,6 +282,7 @@ const DEFAULTS = {
   // silhouette outline. This warps geometry rather than masking, so strokes
   // are never clipped — they bend to follow the shape.
   inkShapeInfluence: 1,
+  inkLoopsClip: false, // clip loops to the shape (cleaner than warp for SVGs)
   // Ink mode — its OWN ripple controls, completely independent from dot ripples
   inkRippleKind: 'twist' as RippleKind,
   inkRippleFrequency: 0.6,
@@ -632,6 +633,7 @@ export function Composition() {
       max: 0.9,
       step: 0.01,
     });
+    loops.addBinding(params, 'inkLoopsClip', { label: 'Clip to Shape' });
     const loopRip = loops.addFolder({ title: 'Ripple' });
     loopRip.addBinding(params, 'inkRippleKind', {
       label: 'Kind',
@@ -1662,6 +1664,13 @@ export function Composition() {
         unitSin[i] = Math.sin(t);
       }
 
+      // Clip to the shape silhouette — cleaner than the radial Shape Influence
+      // warp for complex/concave SVGs (the warp sprays loops into spikes where
+      // the polar radius jumps). Set Shape Influence to 0 and turn this on.
+      if (p.inkLoopsClip && shapeKind !== 'circle' && shapeKind !== 'image') {
+        ctx.clip(buildShape(shapeKind, p.radius, p.customPath));
+      }
+
       const loopCull = Math.max(1, p.inkCull);
       for (let li = 0; li < loops.length; li++) {
         if (li % loopCull !== 0) continue; // keep every Nth loop
@@ -1973,6 +1982,7 @@ export function Composition() {
     p.inkRippleDecay,
     p.inkRippleZScale,
     p.inkShapeInfluence,
+    p.inkLoopsClip,
     p.inkTilt,
     p.inkYaw,
     p.inkPerspective,
