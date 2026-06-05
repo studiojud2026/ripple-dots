@@ -201,7 +201,17 @@ const DEFAULTS = {
   // 'ribbons' = wide twirling horizontal bands; 'ripples' = concentric water
   // rings from drop sources placed on the math path, with true wave
   // superposition between sources.
-  inkStyle: 'loops' as 'loops' | 'ribbons' | 'ripples' | 'plane',
+  inkStyle: 'loops' as 'loops' | 'ribbons' | 'ripples' | 'plane' | 'hatch',
+  // Hatch style — fills the shape (incl. custom SVG) with parallel rippling
+  // lines, clipped to the silhouette, with an optional outline. Keeps the SVG
+  // recognizable instead of warping it.
+  inkHatchSpacing: 9, // gap between fill lines (px)
+  inkHatchAngle: 0, // line direction (degrees)
+  inkHatchRippleAmp: 10, // sine ripple amplitude
+  inkHatchRippleFreq: 4, // ripple cycles across the radius
+  inkHatchOutline: true, // also stroke the silhouette outline
+  inkHatchAnimate: false,
+  inkHatchSpeed: 0.6,
   // Ripples (water) style. Drop sources are sampled from the Placement path;
   // each emits expanding concentric rings that ride on the combined wave
   // height field of all sources (superposition), so where two ripple sets
@@ -546,13 +556,20 @@ export function Composition() {
     const RIBBONS = ['ribbons'];
     const RIPPLES = ['ripples'];
     const PLANE = ['plane'];
+    const HATCH = ['hatch'];
     const LOOPS_RIPPLES = ['loops', 'ripples']; // Placement positions both
 
     const ink = pane.addFolder({ title: 'Ink' });
     inkBlades.push(ink);
     ink.addBinding(params, 'inkStyle', {
       label: 'Style',
-      options: { Loops: 'loops', Ribbons: 'ribbons', Ripples: 'ripples', Plane: 'plane' },
+      options: {
+        Loops: 'loops',
+        Ribbons: 'ribbons',
+        Ripples: 'ripples',
+        Plane: 'plane',
+        Hatch: 'hatch',
+      },
     });
 
     // ──── Appearance (shared by all ink styles) ────
@@ -722,6 +739,17 @@ export function Composition() {
     planePat.addBinding(params, 'inkPlaneWobble', { label: 'Wobble', min: 0, max: 200, step: 1 });
     planePat.addBinding(params, 'inkPlaneWobbleScale', { label: 'Wobble Scale', min: 0.2, max: 8, step: 0.05 });
 
+    // ──── Hatch sub-folder (ink style = hatch) ────
+    const hatch = ink.addFolder({ title: 'Hatch' });
+    tag(hatch, HATCH);
+    hatch.addBinding(params, 'inkHatchSpacing', { label: 'Spacing', min: 2, max: 60, step: 1 });
+    hatch.addBinding(params, 'inkHatchAngle', { label: 'Angle', min: -90, max: 90, step: 1 });
+    hatch.addBinding(params, 'inkHatchRippleAmp', { label: 'Ripple Amp', min: 0, max: 80, step: 0.5 });
+    hatch.addBinding(params, 'inkHatchRippleFreq', { label: 'Ripple Freq', min: 0, max: 16, step: 0.1 });
+    hatch.addBinding(params, 'inkHatchOutline', { label: 'Outline' });
+    hatch.addBinding(params, 'inkHatchAnimate', { label: 'Animate' });
+    hatch.addBinding(params, 'inkHatchSpeed', { label: 'Speed', min: 0, max: 5, step: 0.01 });
+
     // ──────────── CAMERA (ink, top level) ────────────
     // Top-level folder between Ink and Export. Ink-only, so it hides in Dots
     // mode (Dots has its own camera controls in Composition).
@@ -808,6 +836,9 @@ export function Composition() {
     } else if (p.inkStyle === 'plane') {
       animate = p.inkPlaneAnimate;
       speed = p.inkPlaneSpeed;
+    } else if (p.inkStyle === 'hatch') {
+      animate = p.inkHatchAnimate;
+      speed = p.inkHatchSpeed;
     } else {
       animate = p.inkRippleAnimate;
       speed = p.inkRippleSpeed;
@@ -1166,6 +1197,66 @@ export function Composition() {
               : lerpRgb(gB, gC, (tt - 0.5) * 2);
         return `rgba(${c.r},${c.g},${c.b},${alpha})`;
       };
+
+      // ──────────── HATCH STYLE ────────────
+      // Fills the shape (incl. custom SVG) with parallel rippling lines clipped
+      // to the silhouette, plus an optional outline — keeps the SVG recognizable
+      // rather than warping it. 2D line-art; only Roll of the camera applies.
+      if (p.inkStyle === 'hatch') {
+        if (roll !== 0) ctx.rotate(roll);
+        const path = buildShape(shapeKind, p.radius, p.customPath);
+        const ext = p.radius * 1.7; // cover the rotated bounding box
+        const ang = (p.inkHatchAngle * Math.PI) / 180;
+        const dirX = Math.cos(ang);
+        const dirY = Math.sin(ang);
+        const perpX = -dirY;
+        const perpY = dirX;
+        const spacing = Math.max(1, p.inkHatchSpacing);
+        const cull = Math.max(1, p.inkCull);
+        const ampH = p.inkHatchRippleAmp;
+        const freqK = p.radius > 0 ? (p.inkHatchRippleFreq * Math.PI * 2) / p.radius : 0;
+        const nSamp = Math.max(2, p.inkVertices);
+        const jit = mulberry32(p.inkSeed ^ 0x4d);
+        const nOff = Math.ceil((2 * ext) / spacing);
+
+        ctx.save();
+        ctx.clip(path);
+        ctx.lineWidth = p.inkLineWidth;
+        for (let oi = 0; oi <= nOff; oi++) {
+          if (oi % cull !== 0) continue;
+          const o = -ext + oi * spacing;
+          const t01 = nOff > 0 ? oi / nOff : 0;
+          const dh = (jit() - 0.5) * 2 * p.inkHueShift;
+          const dl = (jit() - 0.5) * 2 * p.inkLightnessShift;
+          ctx.strokeStyle = gradOn
+            ? gradColor(t01, p.inkAlpha)
+            : hslString(baseHsl.h + dh, baseHsl.s, baseHsl.l + dl, p.inkAlpha);
+          ctx.beginPath();
+          for (let s = 0; s < nSamp; s++) {
+            const tt = -ext + (s / (nSamp - 1)) * 2 * ext; // along the line
+            const off = o + ampH * Math.sin(tt * freqK + phase); // perp + ripple
+            const X = off * perpX + tt * dirX;
+            const Y = off * perpY + tt * dirY;
+            if (s === 0) ctx.moveTo(X, Y);
+            else ctx.lineTo(X, Y);
+          }
+          ctx.stroke();
+        }
+        ctx.restore();
+
+        if (p.inkHatchOutline) {
+          ctx.lineWidth = Math.max(0.6, p.inkLineWidth * 1.5);
+          ctx.strokeStyle = gradOn
+            ? gradColor(0, Math.min(1, p.inkAlpha * 3))
+            : hslString(baseHsl.h, baseHsl.s, baseHsl.l, Math.min(1, p.inkAlpha * 3));
+          ctx.stroke(path);
+        }
+
+        ctx.filter = 'none';
+        ctx.globalCompositeOperation = 'source-over';
+        ctx.restore();
+        return;
+      }
 
       // ──────────── PLANE STYLE ────────────
       // A flat grid surface facing the camera. Droplets land on it and emanate
@@ -1964,6 +2055,11 @@ export function Composition() {
     p.inkPlaneFalloff,
     p.inkPlaneSpiral,
     p.inkPlaneWobble,
+    p.inkHatchSpacing,
+    p.inkHatchAngle,
+    p.inkHatchRippleAmp,
+    p.inkHatchRippleFreq,
+    p.inkHatchOutline,
     p.inkPlaneWobbleScale,
     waterSources,
     p.inkWaterRings,
