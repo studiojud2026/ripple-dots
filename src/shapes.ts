@@ -350,6 +350,69 @@ export function extractPathData(input: string): string {
   return matches.map((m) => m[1] ?? m[2]).join(' ');
 }
 
+/**
+ * Split SVG path data into its separate subpaths (each `M…` run). Keeps the
+ * distinct shapes of an icon apart (e.g. a caret + a dot) instead of merging
+ * them into one silhouette.
+ */
+export function extractSubpaths(input: string): string[] {
+  const d = extractPathData(input);
+  if (!d) return [];
+  const parts = d.match(/[Mm][^Mm]*/g) || [];
+  return parts.map((s) => s.trim()).filter((s) => s.length > 1);
+}
+
+/**
+ * Sample each SVG subpath into an array of outline points. All subpaths share
+ * ONE transform (from the combined bounding box) so their relative positions
+ * are preserved. Returns one Point[] per subpath. `samples` points per subpath.
+ */
+export function sampleSvgShapes(input: string, radius: number, samples: number): Point[][] {
+  const subs = extractSubpaths(input);
+  if (!subs.length) return [];
+  try {
+    const svgNS = 'http://www.w3.org/2000/svg';
+    const svg = document.createElementNS(svgNS, 'svg');
+    svg.style.position = 'absolute';
+    svg.style.opacity = '0';
+    svg.style.pointerEvents = 'none';
+    const allPath = document.createElementNS(svgNS, 'path');
+    allPath.setAttribute('d', subs.join(' '));
+    svg.appendChild(allPath);
+    document.body.appendChild(svg);
+    const out: Point[][] = [];
+    try {
+      const bbox = allPath.getBBox();
+      const extent = Math.max(bbox.width, bbox.height) / 2;
+      if (!isFinite(extent) || extent === 0) return [];
+      const cx = bbox.x + bbox.width / 2;
+      const cy = bbox.y + bbox.height / 2;
+      const scale = radius / extent;
+      for (const d of subs) {
+        const pth = document.createElementNS(svgNS, 'path');
+        pth.setAttribute('d', d);
+        svg.appendChild(pth);
+        const total = pth.getTotalLength();
+        if (total > 0.5) {
+          const pts: Point[] = [];
+          for (let i = 0; i < samples; i++) {
+            const pt = pth.getPointAtLength((total * i) / samples);
+            // Flip Y so it matches the canvas/parametric shapes (SVG y grows down).
+            pts.push({ x: (pt.x - cx) * scale, y: (pt.y - cy) * scale });
+          }
+          out.push(pts);
+        }
+        svg.removeChild(pth);
+      }
+    } finally {
+      document.body.removeChild(svg);
+    }
+    return out;
+  } catch {
+    return [];
+  }
+}
+
 function customSvg(input: string, r: number): Path2D {
   const d = extractPathData(input);
   if (!d) return circle(r);

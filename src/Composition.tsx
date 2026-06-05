@@ -7,6 +7,7 @@ import {
   buildPolarRadius,
   polarRadiusAt,
   sampleBoundary,
+  sampleSvgShapes,
   type ShapeKind,
 } from './shapes';
 import { generatePath, INK_PATH_OPTIONS, type InkPath } from './placement';
@@ -201,7 +202,12 @@ const DEFAULTS = {
   // 'ribbons' = wide twirling horizontal bands; 'ripples' = concentric water
   // rings from drop sources placed on the math path, with true wave
   // superposition between sources.
-  inkStyle: 'loops' as 'loops' | 'ribbons' | 'ripples' | 'plane',
+  inkStyle: 'loops' as 'loops' | 'ribbons' | 'ripples' | 'plane' | 'svg',
+  // SVG style — traces each subpath of the shape (esp. custom SVGs, kept as
+  // separate shapes) into nested concentric loop-contours that follow the real
+  // outline, then ripple/tilt like loops.
+  inkSvgRings: 14, // nested contours per subpath
+  inkSvgShrink: 0.9, // how far the innermost ring nests toward the subpath centre
   // Ripples (water) style. Drop sources are sampled from the Placement path;
   // each emits expanding concentric rings that ride on the combined wave
   // height field of all sources (superposition), so where two ripple sets
@@ -550,13 +556,21 @@ export function Composition() {
     const RIBBONS = ['ribbons'];
     const RIPPLES = ['ripples'];
     const PLANE = ['plane'];
+    const SVG = ['svg'];
+    const LOOPS_SVG = ['loops', 'svg']; // loop Ripple folder serves both
     const LOOPS_RIPPLES = ['loops', 'ripples']; // Placement positions both
 
     const ink = pane.addFolder({ title: 'Ink' });
     inkBlades.push(ink);
     ink.addBinding(params, 'inkStyle', {
       label: 'Style',
-      options: { Loops: 'loops', Ribbons: 'ribbons', Ripples: 'ripples', Plane: 'plane' },
+      options: {
+        Loops: 'loops',
+        Ribbons: 'ribbons',
+        Ripples: 'ripples',
+        Plane: 'plane',
+        SVG: 'svg',
+      },
     });
 
     // ──── Appearance (shared by all ink styles) ────
@@ -641,7 +655,10 @@ export function Composition() {
       step: 0.01,
     });
     loops.addBinding(params, 'inkLoopsClip', { label: 'Clip to Shape' });
-    const loopRip = loops.addFolder({ title: 'Ripple' });
+    // Ripple — shared by Loops and SVG styles (top-level so it stays visible
+    // when the Loops folder is hidden in SVG style).
+    const loopRip = ink.addFolder({ title: 'Ripple' });
+    tag(loopRip, LOOPS_SVG);
     loopRip.addBinding(params, 'inkRippleKind', {
       label: 'Kind',
       options: {
@@ -663,6 +680,12 @@ export function Composition() {
     const loopGlow = loops.addFolder({ title: 'Glow' });
     loopGlow.addBinding(params, 'inkGlowWidth', { label: 'Glow Width', min: 0, max: 60, step: 0.5 });
     loopGlow.addBinding(params, 'inkGlowAlpha', { label: 'Glow Alpha', min: 0, max: 0.3, step: 0.005 });
+
+    // ──── SVG (svg only) ────
+    const svgF = ink.addFolder({ title: 'SVG' });
+    tag(svgF, SVG);
+    svgF.addBinding(params, 'inkSvgRings', { label: 'Rings', min: 1, max: 80, step: 1 });
+    svgF.addBinding(params, 'inkSvgShrink', { label: 'Nest Shrink', min: 0, max: 1, step: 0.01 });
 
     // ──── Ribbons (ribbons only) ────
     const rib = ink.addFolder({ title: 'Ribbons' });
@@ -822,6 +845,10 @@ export function Composition() {
     } else if (p.inkStyle === 'plane') {
       animate = p.inkPlaneAnimate;
       speed = p.inkPlaneSpeed;
+    } else if (p.inkStyle === 'svg') {
+      // SVG style uses the loop ripple controls.
+      animate = p.inkRippleAnimate;
+      speed = p.inkRippleSpeed;
     } else {
       animate = p.inkRippleAnimate;
       speed = p.inkRippleSpeed;
@@ -954,6 +981,16 @@ export function Composition() {
     dh: number;
     dl: number;
   };
+  // SVG style: sampled outline points per subpath (custom SVG → multiple
+  // shapes; built-in shapes → a single outline). Memoized off shape/path only.
+  const svgShapes = useMemo(() => {
+    if (p.renderMode !== 'ink' || p.inkStyle !== 'svg') return [];
+    const samples = Math.max(16, p.inkVertices);
+    if (shapeKind === 'custom') return sampleSvgShapes(p.customPath, p.radius, samples);
+    if (shapeKind === 'image') return [];
+    return [sampleBoundary(shapeKind, p.radius, p.customPath, samples)];
+  }, [p.renderMode, p.inkStyle, shapeKind, p.customPath, p.radius, p.inkVertices]);
+
   const loops = useMemo<Loop[]>(() => {
     if (p.renderMode !== 'ink' || p.inkStyle !== 'loops') return [];
     // Centers walk a deterministic mathematical path (Lissajous, spiral, rose,
@@ -1182,6 +1219,108 @@ export function Composition() {
               : lerpRgb(gB, gC, (tt - 0.5) * 2);
         return `rgba(${c.r},${c.g},${c.b},${alpha})`;
       };
+
+      // ──────────── SVG STYLE ────────────
+      // Each SVG subpath becomes nested concentric loop-contours that follow
+      // its real outline (shapes kept separate), then ripple/tilt like loops.
+      if (p.inkStyle === 'svg') {
+        const project = (x: number, y: number, z: number) => {
+          const xy = x * cosY + z * sinY;
+          const zy = -x * sinY + z * cosY;
+          const yp = y * cosP - zy * sinP;
+          const zp = y * sinP + zy * cosP;
+          const sx = xy * cosR - yp * sinR;
+          const sy = xy * sinR + yp * cosR;
+          const scale = focal / Math.max(1, focal + zp);
+          return { x: sx * scale, y: sy * scale, depth: zp };
+        };
+        const ringsN = Math.max(1, p.inkSvgRings);
+        const shrink = p.inkSvgShrink;
+        const zScale = p.inkRippleZScale;
+        const fade = p.inkDepthFade;
+        const cull = Math.max(1, p.inkCull);
+        const rand = mulberry32(p.inkSeed);
+
+        type SLine = { pts: { x: number; y: number }[]; depth: number; dh: number; dl: number };
+        const built: SLine[] = [];
+        let minD = Infinity;
+        let maxD = -Infinity;
+        let ringIdx = 0;
+        for (const shape of svgShapes) {
+          if (shape.length < 2) continue;
+          let scx = 0;
+          let scy = 0;
+          for (const pt of shape) {
+            scx += pt.x;
+            scy += pt.y;
+          }
+          scx /= shape.length;
+          scy /= shape.length;
+          for (let k = 0; k < ringsN; k++) {
+            const dh = (rand() - 0.5) * 2 * p.inkHueShift;
+            const dl = (rand() - 0.5) * 2 * p.inkLightnessShift;
+            if (ringIdx++ % cull !== 0) continue;
+            // Nest each ring inward toward the subpath centroid.
+            const f = ringsN === 1 ? 1 : 1 - (k / (ringsN - 1)) * shrink;
+            const verts = shape.map((pt) => ({
+              x: scx + (pt.x - scx) * f,
+              y: scy + (pt.y - scy) * f,
+              r: 0,
+            }));
+            const warped = applyRipple(verts, {
+              kind: p.inkRippleKind,
+              frequency: p.inkRippleFrequency,
+              depth: p.inkRippleDepth,
+              decay: p.inkRippleDecay,
+              phase,
+              boundary,
+            });
+            if (zScale !== 0) {
+              for (const w of warped) {
+                if (w.z === 0) continue;
+                const r = Math.hypot(w.x, w.y);
+                if (r === 0) continue;
+                const kk = (w.z * zScale) / r;
+                w.x += w.x * kk;
+                w.y += w.y * kk;
+              }
+            }
+            const pts = new Array(warped.length);
+            let dsum = 0;
+            for (let i = 0; i < warped.length; i++) {
+              const w = warped[i];
+              const pr = project(w.x, w.y, w.z);
+              pts[i] = { x: pr.x, y: pr.y };
+              dsum += pr.depth;
+            }
+            const dm = dsum / warped.length;
+            if (dm < minD) minD = dm;
+            if (dm > maxD) maxD = dm;
+            built.push({ pts, depth: dm, dh, dl });
+          }
+        }
+        const dRange = maxD > minD ? maxD - minD : 1;
+        ctx.lineWidth = p.inkLineWidth;
+        for (const b of built) {
+          const gt = (b.depth - minD) / dRange;
+          const fog = fade > 0 ? 1 - fade * gt : 1;
+          ctx.strokeStyle = gradOn
+            ? gradColor(gt, p.inkAlpha * fog)
+            : hslString(baseHsl.h + b.dh, baseHsl.s, baseHsl.l + b.dl, p.inkAlpha * fog);
+          ctx.beginPath();
+          for (let i = 0; i < b.pts.length; i++) {
+            const pt = b.pts[i];
+            if (i === 0) ctx.moveTo(pt.x, pt.y);
+            else ctx.lineTo(pt.x, pt.y);
+          }
+          ctx.closePath();
+          ctx.stroke();
+        }
+        ctx.filter = 'none';
+        ctx.globalCompositeOperation = 'source-over';
+        ctx.restore();
+        return;
+      }
 
       // ──────────── PLANE STYLE ────────────
       // A flat grid surface facing the camera. Droplets land on it and emanate
@@ -1994,6 +2133,9 @@ export function Composition() {
     p.inkShapeInfluence,
     p.inkShapeSmooth,
     p.inkLoopsClip,
+    svgShapes,
+    p.inkSvgRings,
+    p.inkSvgShrink,
     p.inkTilt,
     p.inkYaw,
     p.inkPerspective,
