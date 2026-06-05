@@ -282,6 +282,7 @@ const DEFAULTS = {
   // silhouette outline. This warps geometry rather than masking, so strokes
   // are never clipped — they bend to follow the shape.
   inkShapeInfluence: 1,
+  inkShapeSmooth: 0, // smooth the shape outline before warping (anti-spike for SVGs)
   inkLoopsClip: false, // clip loops to the shape (cleaner than warp for SVGs)
   // Ink mode — its OWN ripple controls, completely independent from dot ripples
   inkRippleKind: 'twist' as RippleKind,
@@ -619,6 +620,12 @@ export function Composition() {
       max: 1,
       step: 0.01,
     });
+    place.addBinding(params, 'inkShapeSmooth', {
+      label: 'Shape Smoothing',
+      min: 0,
+      max: 1,
+      step: 0.01,
+    });
 
     // ──── Loops (loops only) ────
     const loops = ink.addFolder({ title: 'Loops' });
@@ -714,6 +721,7 @@ export function Composition() {
     });
     plane.addBinding(params, 'inkPlaneClip', { label: 'Clip to Shape' });
     plane.addBinding(params, 'inkPlaneShapeBend', { label: 'Bend to Shape', min: 0, max: 1, step: 0.01 });
+    plane.addBinding(params, 'inkShapeSmooth', { label: 'Shape Smoothing', min: 0, max: 1, step: 0.01 });
     const planeDrop = plane.addFolder({ title: 'Droplet' });
     planeDrop.addBinding(params, 'inkPlaneDrops', { label: 'Droplets', min: 1, max: 12, step: 1 });
     planeDrop.addBinding(params, 'inkPlaneSpread', { label: 'Drop Spread', min: 0, max: 1, step: 0.01 });
@@ -1146,7 +1154,9 @@ export function Composition() {
       // follow the contour. A circle gives factor 1 everywhere (no-op).
       const influence = p.inkShapeInfluence;
       const useShapeWarp = influence > 0 && shapeKind !== 'circle' && shapeKind !== 'image';
-      const polar = useShapeWarp ? buildPolarRadius(boundary) : null;
+      const polar = useShapeWarp
+        ? buildPolarRadius(boundary, 240, p.inkShapeSmooth * 40)
+        : null;
       const invRadius = p.radius > 0 ? 1 / p.radius : 0;
 
       const baseHsl = rgbToHsl(hexToRgb(p.inkColor));
@@ -1270,7 +1280,7 @@ export function Composition() {
         const bendShape = p.inkPlaneShapeBend;
         const bendPolar =
           bendShape > 0 && shapeKind !== 'circle' && shapeKind !== 'image'
-            ? buildPolarRadius(boundary)
+            ? buildPolarRadius(boundary, 240, p.inkShapeSmooth * 40)
             : null;
         const invR = p.radius > 0 ? 1 / p.radius : 0;
 
@@ -1982,6 +1992,7 @@ export function Composition() {
     p.inkRippleDecay,
     p.inkRippleZScale,
     p.inkShapeInfluence,
+    p.inkShapeSmooth,
     p.inkLoopsClip,
     p.inkTilt,
     p.inkYaw,

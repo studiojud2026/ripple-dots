@@ -29,8 +29,16 @@ export type Point = { x: number; y: number };
  *
  * We take the MAX radius per angular bucket so concave/star shapes keep their
  * outermost extent (points), and fill any empty buckets from their neighbours.
+ *
+ * `smoothRadius` (in buckets) applies a circular blur to the table, rounding
+ * off sharp jumps so a field warped by it doesn't spike at notches/concavities
+ * of complex SVGs.
  */
-export function buildPolarRadius(boundary: Point[], buckets = 240): Float64Array {
+export function buildPolarRadius(
+  boundary: Point[],
+  buckets = 240,
+  smoothRadius = 0,
+): Float64Array {
   const table = new Float64Array(buckets);
   for (const pt of boundary) {
     const ang = Math.atan2(pt.y, pt.x); // -π..π
@@ -50,6 +58,17 @@ export function buildPolarRadius(boundary: Point[], buckets = 240): Float64Array
   if (table[0] === 0) table[0] = last;
   for (let i = 0; i < buckets; i++) {
     if (table[i] === 0) table[i] = table[(i - 1 + buckets) % buckets] || last;
+  }
+  // Circular box-blur to round off sharp angular jumps (anti-spike).
+  const r = Math.round(smoothRadius);
+  if (r >= 1) {
+    const out = new Float64Array(buckets);
+    for (let i = 0; i < buckets; i++) {
+      let sum = 0;
+      for (let k = -r; k <= r; k++) sum += table[((i + k) % buckets + buckets) % buckets];
+      out[i] = sum / (2 * r + 1);
+    }
+    return out;
   }
   return table;
 }
