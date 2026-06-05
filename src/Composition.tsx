@@ -222,6 +222,7 @@ const DEFAULTS = {
   inkPlaneSize: 1.3, // plane half-extent as a fraction of radius
   inkPlaneGrid: 'both' as 'both' | 'rows',
   inkPlaneClip: false, // clip the plane to the Canvas shape (incl. custom SVG)
+  inkPlaneShapeBend: 0, // warp the grid into the shape outline (0 = off, 1 = full)
   inkPlaneDrops: 3,
   inkPlaneSpread: 0.6, // how far drops scatter from centre
   inkPlaneRingFreq: 6, // rings from a drop out to the plane edge
@@ -710,6 +711,7 @@ export function Composition() {
       options: { 'Rows + Cols': 'both', 'Rows only': 'rows' },
     });
     plane.addBinding(params, 'inkPlaneClip', { label: 'Clip to Shape' });
+    plane.addBinding(params, 'inkPlaneShapeBend', { label: 'Bend to Shape', min: 0, max: 1, step: 0.01 });
     const planeDrop = plane.addFolder({ title: 'Droplet' });
     planeDrop.addBinding(params, 'inkPlaneDrops', { label: 'Droplets', min: 1, max: 12, step: 1 });
     planeDrop.addBinding(params, 'inkPlaneSpread', { label: 'Drop Spread', min: 0, max: 1, step: 0.01 });
@@ -1260,6 +1262,16 @@ export function Composition() {
         const inside = (x: number, y: number) =>
           !clipPath || !hitCtx || hitCtx.isPointInPath(clipPath, x, y);
 
+        // Bend to shape: radially squish each grid point toward the silhouette
+        // outline (like the loops Shape Influence) so the surface takes the
+        // shape without cropping. polarRadius gives the shape's radius per angle.
+        const bendShape = p.inkPlaneShapeBend;
+        const bendPolar =
+          bendShape > 0 && shapeKind !== 'circle' && shapeKind !== 'image'
+            ? buildPolarRadius(boundary)
+            : null;
+        const invR = p.radius > 0 ? 1 / p.radius : 0;
+
         const lineRand = mulberry32(p.inkSeed ^ 0x7c);
         type GLine = { pts: { x: number; y: number }[]; depth: number; dh: number; dl: number };
         const built: GLine[] = [];
@@ -1288,8 +1300,14 @@ export function Composition() {
             for (let i = 0; i < nSamp; i++) {
               const u = nSamp === 1 ? 0 : i / (nSamp - 1);
               const moving = -half + u * 2 * half;
-              const gx = rows ? moving : fixed;
-              const gy = rows ? fixed : moving;
+              let gx = rows ? moving : fixed;
+              let gy = rows ? fixed : moving;
+              if (bendPolar) {
+                const shapeR = polarRadiusAt(bendPolar, Math.atan2(gy, gx));
+                const factor = 1 + (shapeR * invR - 1) * bendShape;
+                gx *= factor;
+                gy *= factor;
+              }
               if (!inside(gx, gy)) {
                 flush();
                 continue;
@@ -1983,6 +2001,7 @@ export function Composition() {
     p.inkPlaneSize,
     p.inkPlaneGrid,
     p.inkPlaneClip,
+    p.inkPlaneShapeBend,
     p.inkPlaneDrops,
     p.inkPlaneSpread,
     p.inkPlaneRingFreq,
